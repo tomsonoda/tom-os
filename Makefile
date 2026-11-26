@@ -1,9 +1,34 @@
 # tom-os build
-CC      ?= gcc
+#
+# The kernel is a freestanding x86-64 ELF, so it needs a GNU toolchain that
+# targets ELF. On Linux the system gcc works. On macOS install a cross
+# toolchain (brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu); it is
+# picked up automatically. Override with `make CROSS=<prefix>`.
+ifeq ($(shell uname -s),Darwin)
+CROSS ?= x86_64-elf-
+else
+CROSS ?=
+endif
+
+CC      := $(CROSS)gcc
 AS      := nasm
-LD      := ld
-OBJCOPY := objcopy
+LD      := $(CROSS)ld
+OBJCOPY := $(CROSS)objcopy
 QEMU    ?= qemu-system-x86_64
+GRUB_MKRESCUE ?= grub-mkrescue
+
+# Fail early with a hint instead of a confusing compiler error.
+REQUIRED := $(CC) $(LD) $(OBJCOPY) $(AS)
+MISSING  := $(strip $(foreach t,$(REQUIRED),$(if $(shell command -v $(t) 2>/dev/null),,$(t))))
+ifneq ($(MISSING),)
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifeq ($(shell uname -s),Darwin)
+$(error Missing tools: $(MISSING). Install them with: brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu)
+else
+$(error Missing tools: $(MISSING). Install gcc, binutils and nasm)
+endif
+endif
+endif
 
 BUILD := build
 GCCINC := $(shell $(CC) -print-file-name=include)
@@ -69,7 +94,7 @@ $(ISO): $(KERNEL) iso/grub.cfg
 	mkdir -p $(BUILD)/isoroot/boot/grub
 	cp $(KERNEL) $(BUILD)/isoroot/boot/tomos.elf
 	sed 's|@MODEL@|$(MODEL)|g' iso/grub.cfg > $(BUILD)/isoroot/boot/grub/grub.cfg
-	grub-mkrescue -o $@ $(BUILD)/isoroot 2> $(BUILD)/grub-mkrescue.log || (cat $(BUILD)/grub-mkrescue.log; false)
+	$(GRUB_MKRESCUE) -o $@ $(BUILD)/isoroot 2> $(BUILD)/grub-mkrescue.log || (cat $(BUILD)/grub-mkrescue.log; false)
 	@ls -l $@ | awk '{printf "built %s (%.1f MiB)\n", $$NF, $$5 / 1048576}'
 
 run-iso: $(ISO)

@@ -31,7 +31,8 @@ First milestone. Runs on x86-64 under QEMU.
 
 ## Requirements
 
-- `gcc`, `nasm`, `binutils`, `make`
+- `gcc`, `nasm`, `binutils`, `make` (Linux), or on macOS a cross toolchain:
+  `brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu`
 - `qemu-system-x86_64`
 - Python 3 (for the tests and the host-side gateways)
 
@@ -106,11 +107,24 @@ You can write to the agent in any language on the serial console. The VGA text s
 
 ## Trying it on a Mac (macOS)
 
-tom-os is emulated as an x86-64 machine, so both Apple Silicon and Intel Macs work. Download the ISO from GitHub Actions as described above (building on macOS is not supported yet).
+tom-os is emulated as an x86-64 machine, so both Apple Silicon and Intel Macs work.
 
-The steps in this section are based on testing with QEMU on Linux. They have not been verified with QEMU or UTM on macOS.
+The steps in this section are based on testing with QEMU on Linux. They have not been verified on macOS.
 
-### QEMU (Homebrew)
+### Build and run from source
+
+Apple's compiler cannot produce the kernel, so install a cross toolchain. The Makefile uses it automatically on macOS.
+
+```sh
+brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu
+make
+make test      # optional
+make run       # or: make run-vga for the VGA window
+```
+
+`make run` loads the kernel directly, so no ISO is needed. `make iso` is not set up for macOS; download the ISO from GitHub Actions as described above if you want one (for UTM, for example).
+
+### QEMU with the ISO
 
 ```sh
 brew install qemu
