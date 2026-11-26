@@ -1,0 +1,381 @@
+/* The agent: conversation state, LLM calls (OpenAI-compatible chat
+ * completions over plain HTTP) and the tools the model can use. */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "../kernel/tomos.h"
+
+#define MAX_STEPS 24
+#define TOOL_RESULT_MAX 12000
+
+static const char SYSTEM_PROMPT[] =
+    "You are the built-in agent of tom-os, a tiny bare-metal operating system whose only "
+    "interface is this conversation. There are no pre-installed applications: when the user "
+    "wants a tool, a game or any other program, you write it on the spot as a Lua app and the "
+    "user runs it immediately.\n"
+    "\n"
+    "Environment:\n"
+    "- Text console, 80x25 characters. ANSI escape sequences work (colors, cursor movement, "
+    "clear screen). On the VGA screen only ASCII is displayed, so keep app UI text in ASCII "
+    "unless the user asks otherwise.\n"
+    "- Apps are Lua 5.4 scripts. Available: base library, string, table, math, utf8, "
+    "coroutine, plus:\n"
+    "  io.write, io.read (formats 'l', 'n', 'a', 'L', or a byte count), io.lines, "
+    "io.open(path, mode) with file:read/write/lines/seek/close.\n"
+    "  os.time, os.date, os.clock, os.remove, os.rename, os.exit.\n"
+    "  tomos.cls() clears the screen; tomos.getkey([timeout_ms]) returns one key without "
+    "waiting for Enter ('a', 'up', 'down', 'left', 'right', 'enter', 'esc', 'backspace', "
+    "'tab') or nil on timeout; tomos.sleep(ms); tomos.readline([prompt]); tomos.time_ms(); "
+    "tomos.files(); tomos.read_file(path); tomos.write_file(path, data).\n"
+    "  require('name') loads name.lua, apps/name.lua or lib/name.lua.\n"
+    "- Not available: os.execute, io.popen, the debug and package libraries, networking, "
+    "graphics, sound.\n"
+    "- Files live in a flat in-memory filesystem and are lost on reboot. Save apps as "
+    "apps/<name>.lua. The user starts an app with the command /run <name> and can stop any app "
+    "with Ctrl-C.\n"
+    "\n"
+    "How to work:\n"
+    "- To build an app: write it with write_file, check it with run_lua when a non-interactive "
+    "check is possible (for example loading the file with loadfile to catch syntax errors, or "
+    "testing pure functions), fix any errors, then either call launch_app so the user can use "
+    "it right away or tell them the /run command.\n"
+    "- run_lua has no keyboard input: io.read and tomos.getkey return nil there, and it stops "
+    "after 10 seconds. Never run an interactive app with run_lua; use launch_app for that.\n"
+    "- Every interactive app must have an obvious way to quit (for example the q key).\n"
+    "- For questions that need no program, just answer briefly.\n"
+    "- Reply in the language the user writes in. Keep answers short; the screen is small.";
+
+static const char TOOLS_JSON[] =
+    "[{\"type\":\"function\",\"function\":{\"name\":\"write_file\","
+    "\"description\":\"Create or overwrite a file in the in-memory filesystem. Apps go in "
+    "apps/<name>.lua.\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
+    "\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"read_file\","
+    "\"description\":\"Read a file from the in-memory filesystem.\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},"
+    "\"required\":[\"path\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"list_files\","
+    "\"description\":\"List all files with their sizes.\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{}}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"delete_file\","
+    "\"description\":\"Delete a file.\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},"
+    "\"required\":[\"path\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"run_lua\","
+    "\"description\":\"Run Lua code non-interactively and return what it printed, or the error "
+    "with a traceback. No keyboard input; 10 second limit.\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"string\"}},"
+    "\"required\":[\"code\"]}}},"
+    "{\"type\":\"function\",\"function\":{\"name\":\"launch_app\","
+    "\"description\":\"Start a saved Lua app on the user's console. The user interacts with it "
+    "directly; this returns when the app exits, with the error if it crashed.\","
+    "\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},"
+    "\"required\":[\"path\"]}}}]";
+
+/* ----------------------------------------------------------- conversation */
+typedef struct {
+    char *id, *name, *args;
+} toolcall;
+
+typedef struct {
+    const char *role;
+    char *content; /* may be NULL for assistant messages that only call tools */
+    toolcall *calls;
+    int ncalls;
+    char *tool_call_id;
+} message;
+
+static message *msgs;
+static int nmsgs, cap_msgs;
+
+static message *msg_add(const char *role, const char *content) {
+    if (nmsgs == cap_msgs) {
+        int ncap = cap_msgs ? cap_msgs * 2 : 32;
+        message *n = realloc(msgs, (size_t)ncap * sizeof *n);
+        if (!n) return NULL;
+        msgs = n;
+        cap_msgs = ncap;
+    }
+    message *m = &msgs[nmsgs++];
+    memset(m, 0, sizeof *m);
+    m->role = role;
+    m->content = content ? strdup(content) : NULL;
+    return m;
+}
+
+static void msg_free(message *m) {
+    free(m->content);
+    free(m->tool_call_id);
+    for (int i = 0; i < m->ncalls; i++) {
+        free(m->calls[i].id);
+        free(m->calls[i].name);
+        free(m->calls[i].args);
+    }
+    free(m->calls);
+}
+
+static void msgs_truncate(int n) {
+    while (nmsgs > n) msg_free(&msgs[--nmsgs]);
+}
+
+void agent_reset(void) { msgs_truncate(0); }
+
+/* ------------------------------------------------------------------- LLM */
+static void put_field(strbuf *b, const char *key, const char *val) {
+    json_quote(b, key, strlen(key));
+    sb_putc(b, ':');
+    json_quote(b, val, strlen(val));
+}
+
+static void build_request(strbuf *b, const char *model) {
+    sb_putc(b, '{');
+    put_field(b, "model", model);
+    sb_puts(b, ",\"stream\":false,\"messages\":[{");
+    put_field(b, "role", "system");
+    sb_putc(b, ',');
+    put_field(b, "content", SYSTEM_PROMPT);
+    sb_putc(b, '}');
+    for (int i = 0; i < nmsgs; i++) {
+        message *m = &msgs[i];
+        sb_puts(b, ",{");
+        put_field(b, "role", m->role);
+        sb_puts(b, ",\"content\":");
+        if (m->content && (*m->content || !m->ncalls)) json_quote(b, m->content, strlen(m->content));
+        else sb_puts(b, "null");
+        if (m->tool_call_id) {
+            sb_putc(b, ',');
+            put_field(b, "tool_call_id", m->tool_call_id);
+        }
+        if (m->ncalls) {
+            sb_puts(b, ",\"tool_calls\":[");
+            for (int k = 0; k < m->ncalls; k++) {
+                if (k) sb_putc(b, ',');
+                sb_putc(b, '{');
+                put_field(b, "id", m->calls[k].id);
+                sb_puts(b, ",\"type\":\"function\",\"function\":{");
+                put_field(b, "name", m->calls[k].name);
+                sb_putc(b, ',');
+                put_field(b, "arguments", m->calls[k].args);
+                sb_puts(b, "}}");
+            }
+            sb_putc(b, ']');
+        }
+        sb_putc(b, '}');
+    }
+    sb_puts(b, "],\"tools\":");
+    sb_puts(b, TOOLS_JSON);
+    sb_putc(b, '}');
+}
+
+/* Calls the model with the current conversation and appends its reply.
+ * Returns 0 on success; on failure describes the reason in `errmsg`. */
+static int llm_call(strbuf *errmsg) {
+    char endpoint[64] = "10.0.2.2:8080", model[96] = "default", path[128] = "/v1/chat/completions";
+    cmdline_get("llm", endpoint, sizeof endpoint);
+    cmdline_get("model", model, sizeof model);
+    cmdline_get("path", path, sizeof path);
+
+    u32 ip;
+    u16 port = 80;
+    char *colon = strchr(endpoint, ':');
+    if (colon) {
+        *colon = 0;
+        port = (u16)atoi(colon + 1);
+    }
+    if (!net_parse_ip(endpoint, &ip)) {
+        sb_printf(errmsg, "bad llm= address '%s' (expected IP:port)", endpoint);
+        return -1;
+    }
+
+    strbuf req, resp;
+    sb_init(&req);
+    sb_init(&resp);
+    build_request(&req, model);
+    int status = 0;
+    int r = http_post_json(ip, port, path, sb_cstr(&req), req.len, &resp, &status, 600000);
+    sb_free(&req);
+    if (r < 0) {
+        sb_printf(errmsg, "LLM request to %s:%u failed: %s", endpoint, port, net_strerror(r));
+        sb_free(&resp);
+        return -1;
+    }
+
+    jv *root = json_parse(sb_cstr(&resp), resp.len);
+    jv *err = json_get(root, "error");
+    jv *m = json_get(json_at(json_get(root, "choices"), 0), "message");
+    if (status != 200 || !m) {
+        const char *detail = json_str(json_get(err, "message"));
+        if (!detail) detail = json_str(err);
+        sb_printf(errmsg, "LLM returned HTTP %d: %.300s", status,
+                  detail ? detail : resp.len ? resp.p : "(empty response)");
+        json_free(root);
+        sb_free(&resp);
+        return -1;
+    }
+
+    message *am = msg_add("assistant", json_str(json_get(m, "content")));
+    jv *calls = json_get(m, "tool_calls");
+    int n = 0;
+    for (jv *c = calls && calls->type == J_ARR ? calls->child : NULL; c; c = c->next) n++;
+    if (am && n) {
+        am->calls = calloc((size_t)n, sizeof *am->calls);
+        for (jv *c = calls->child; am->calls && c; c = c->next) {
+            jv *fn = json_get(c, "function");
+            const char *id = json_str(json_get(c, "id"));
+            const char *name = json_str(json_get(fn, "name"));
+            jv *args = json_get(fn, "arguments");
+            toolcall *tc = &am->calls[am->ncalls++];
+            tc->id = strdup(id ? id : "call");
+            tc->name = strdup(name ? name : "");
+            tc->args = strdup(json_str(args) ? json_str(args) : "{}");
+        }
+    }
+    json_free(root);
+    sb_free(&resp);
+    if (!am) sb_puts(errmsg, "out of memory");
+    return am ? 0 : -1;
+}
+
+/* ----------------------------------------------------------------- tools */
+int app_run(const char *name, strbuf *err) {
+    char path[200];
+    size_t len;
+    const char *src = fs_read(name, &len);
+    snprintf(path, sizeof path, "%s", name);
+    if (!src) {
+        snprintf(path, sizeof path, "apps/%s.lua", name);
+        src = fs_read(path, &len);
+    }
+    if (!src) {
+        snprintf(path, sizeof path, "apps/%s", name);
+        src = fs_read(path, &len);
+    }
+    if (!src) {
+        sb_printf(err, "no such app: %s", name);
+        return -1;
+    }
+    /* run from a private copy: the app may rewrite its own file */
+    char *copy = strndup(src, len);
+    if (!copy) {
+        sb_puts(err, "out of memory");
+        return -1;
+    }
+    int r = lua_run(path, copy, len, 1, 0, NULL, err);
+    free(copy);
+    console_puts("\x1b[0m\n");
+    return r;
+}
+
+static void exec_tool(const toolcall *tc, strbuf *out) {
+    jv *args = json_parse(tc->args, strlen(tc->args));
+    const char *path = json_str(json_get(args, "path"));
+
+    if (!args || args->type != J_OBJ) {
+        sb_puts(out, "error: arguments are not a valid JSON object");
+    } else if (strcmp(tc->name, "write_file") == 0) {
+        jv *content = json_get(args, "content");
+        if (!path || !json_str(content)) {
+            sb_puts(out, "error: 'path' and 'content' are required");
+        } else if (fs_write(path, content->str, content->len) != 0) {
+            sb_puts(out, "error: could not write file (bad path or out of memory)");
+        } else {
+            kprintf("  [write_file] %s (%zu bytes)\n", path, content->len);
+            sb_printf(out, "wrote %zu bytes to %s", content->len, path);
+        }
+    } else if (strcmp(tc->name, "read_file") == 0) {
+        size_t len;
+        const char *d = path ? fs_read(path, &len) : NULL;
+        kprintf("  [read_file] %s\n", path ? path : "?");
+        if (d) sb_put(out, d, len);
+        else sb_printf(out, "error: no such file: %s", path ? path : "(missing path)");
+    } else if (strcmp(tc->name, "list_files") == 0) {
+        void *it = NULL;
+        size_t len;
+        const char *name;
+        kprintf("  [list_files]\n");
+        while ((name = fs_next(&it, &len))) sb_printf(out, "%s (%zu bytes)\n", name, len);
+        if (!out->len) sb_puts(out, "(no files)");
+    } else if (strcmp(tc->name, "delete_file") == 0) {
+        kprintf("  [delete_file] %s\n", path ? path : "?");
+        if (path && fs_delete(path) == 0) sb_printf(out, "deleted %s", path);
+        else sb_printf(out, "error: no such file: %s", path ? path : "(missing path)");
+    } else if (strcmp(tc->name, "run_lua") == 0) {
+        jv *code = json_get(args, "code");
+        if (!json_str(code)) {
+            sb_puts(out, "error: 'code' is required");
+        } else {
+            strbuf err;
+            sb_init(&err);
+            kprintf("  [run_lua] %zu bytes ... ", code->len);
+            int r = lua_run("run_lua", code->str, code->len, 0, 10000, out, &err);
+            kprintf("%s\n", r == 0 ? "ok" : "error");
+            if (r != 0) sb_printf(out, "%serror: %s", out->len ? "\n" : "", sb_cstr(&err));
+            else if (!out->len) sb_puts(out, "(finished with no output)");
+            sb_free(&err);
+        }
+    } else if (strcmp(tc->name, "launch_app") == 0) {
+        if (!path) {
+            sb_puts(out, "error: 'path' is required");
+        } else {
+            strbuf err;
+            sb_init(&err);
+            kprintf("  [launch_app] %s\n", path);
+            if (app_run(path, &err) == 0) sb_puts(out, "the app ran and exited normally");
+            else {
+                kprintf("  [app error] %s\n", sb_cstr(&err));
+                sb_printf(out, "the app stopped with an error: %s", sb_cstr(&err));
+            }
+            sb_free(&err);
+        }
+    } else {
+        sb_printf(out, "error: unknown tool '%s'", tc->name);
+    }
+    json_free(args);
+    if (out->len > TOOL_RESULT_MAX) {
+        out->len = TOOL_RESULT_MAX;
+        out->p[out->len] = 0;
+        sb_puts(out, "\n[output truncated]");
+    }
+}
+
+/* ------------------------------------------------------------------ turn */
+void agent_turn(const char *user_text) {
+    int mark = nmsgs;
+    if (!net_up()) {
+        kprintf("[error] no network device found. Start QEMU with "
+                "-netdev user,id=n0 -device virtio-net-pci,netdev=n0\n");
+        return;
+    }
+    if (!msg_add("user", user_text)) return;
+    console_clear_break();
+
+    for (int step = 0; step < MAX_STEPS; step++) {
+        kprintf("\x1b[2m(thinking... Ctrl-C to cancel)\x1b[0m\r");
+        strbuf errmsg;
+        sb_init(&errmsg);
+        int r = llm_call(&errmsg);
+        kprintf("\x1b[2K\r");
+        if (r != 0) kprintf("[error] %s\n", sb_cstr(&errmsg));
+        sb_free(&errmsg);
+        if (r != 0) {
+            /* drop the unfinished exchange so the history stays well-formed */
+            msgs_truncate(mark);
+            return;
+        }
+        message *am = &msgs[nmsgs - 1];
+        if (am->content && *am->content) kprintf("%s\n", am->content);
+        if (!am->ncalls) return;
+
+        int ncalls = am->ncalls, idx = nmsgs - 1;
+        for (int k = 0; k < ncalls; k++) {
+            strbuf out;
+            sb_init(&out);
+            exec_tool(&msgs[idx].calls[k], &out);
+            message *tm = msg_add("tool", sb_cstr(&out));
+            if (tm) tm->tool_call_id = strdup(msgs[idx].calls[k].id);
+            sb_free(&out);
+        }
+    }
+    kprintf("[stopped after %d steps]\n", MAX_STEPS);
+}
