@@ -39,31 +39,128 @@ void sb_putc(strbuf *b, char c);
 void sb_printf(strbuf *b, const char *fmt, ...);
 char *sb_cstr(strbuf *b); /* NUL-terminated view, never NULL */
 
-/* ---- console (kernel/console.c) ---- */
+/* ---- terminals and the console (kernel/console.c) ---- */
+/* A character-cell terminal. Cells use the VGA text layout (attr << 8 | char),
+ * so the hardware text screen and terminal windows share one implementation. */
+typedef struct term {
+    int cols, rows;
+    u16 *cells;
+    int cx, cy;
+    u8 attr;
+    int esc_state, esc_args[4], esc_n, esc_private;
+    u32 dirty; /* one bit per row that needs redrawing (windows only) */
+    int hw;    /* backed by the VGA text screen */
+} term;
+
+/* Where a thread's console I/O goes. */
+typedef struct tty {
+    term *term;      /* may be NULL */
+    strbuf *cap;     /* when set, output is captured here instead */
+    size_t cap_limit;
+    int serial;      /* mirror output to COM1 */
+    u8 inq[1024];
+    unsigned head, tail;
+    int brk;         /* Ctrl-C seen */
+} tty;
+
 void console_init(void);
+tty *console_tty0(void);              /* the shell's tty (serial + first screen) */
+tty *tty_create(int cols, int rows);  /* tty with its own terminal buffer */
+void tty_destroy(tty *t);
+void tty_input(tty *t, const char *bytes); /* deliver typed characters */
+void console_poll_input(void);        /* drain serial / keyboard / mouse */
+void mouse_init(void);
+
+/* All of these act on the calling thread's tty. */
 void console_write(const char *s, size_t n);
 void console_puts(const char *s);
 /* While capturing, console output goes to the buffer instead of the screen. */
 void console_capture(strbuf *b, size_t limit);
-int console_capturing(void);
 #define KEY_TIMEOUT (-1)
 #define KEY_BREAK (-2)
-/* Next input byte; timeout_ms < 0 waits forever. KEY_BREAK on Ctrl-C. */
+/* Next input byte; timeout_ms < 0 waits forever. KEY_BREAK on Ctrl-C or when
+ * the thread is being killed. */
 int console_getc(int timeout_ms);
 /* True once if Ctrl-C was pressed since the last call. */
 int console_break_pending(void);
 void console_clear_break(void);
-/* Line editor. Returns length, or KEY_BREAK. */
-int console_readline(char *buf, size_t max);
+/* Line editor; with `history`, the up/down arrows recall earlier lines.
+ * Returns the length, or KEY_BREAK. */
+int console_readline(char *buf, size_t max, int history);
+
+/* ---- threads (kernel/sched.c): cooperative, round-robin ---- */
+typedef struct thread thread;
+struct window;
+thread *thread_spawn(void (*fn)(void *), void *arg, tty *t);
+void thread_exit(void) __attribute__((noreturn));
+void thread_kill(thread *t);          /* ask a thread to stop */
+int thread_killed(void);              /* has the calling thread been asked to stop? */
+tty *thread_tty(void);
+void thread_set_tty(tty *t);
+struct window *thread_window(void);
+void thread_set_window(struct window *w);
+void *thread_data(void);              /* per-thread slot used by the Lua runtime */
+void thread_set_data(void *p);
+void sched_yield(void);               /* let other threads run; caller stays busy */
+void cpu_idle(void);                  /* caller is waiting: run others, HLT if all wait */
 
 /* ---- CPU / interrupts / time (kernel/cpu.c) ---- */
 void cpu_init(void);
-void cpu_idle(void); /* HLT until the next interrupt (1 ms timer at the latest) */
+void cpu_halt(void); /* HLT until the next interrupt (1 ms timer at the latest) */
 u64 time_ms(void);   /* milliseconds since boot */
 void sleep_ms(u64 ms);
 u64 rtc_unix_time(void); /* wall clock, UTC */
 void cpu_poweroff(void);
 void cpu_reboot(void);
+
+/* ---- PCI (kernel/virtio_net.c) ---- */
+u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off);
+void pci_write(u8 bus, u8 dev, u8 fn, u8 off, u32 v);
+
+/* ---- graphics (gui/gfx.c) ---- */
+typedef struct surface {
+    u32 *px; /* 0x00RRGGBB */
+    int w, h;
+    int cx0, cy0, cx1, cy1; /* clip rectangle, exclusive upper bounds */
+} surface;
+int fb_init(int w, int h);  /* switch to a linear framebuffer; 0 on success */
+extern surface fb_screen;
+void surface_init(surface *s, u32 *px, int w, int h);
+void gfx_fill(surface *s, int x, int y, int w, int h, u32 c);
+void gfx_pixel(surface *s, int x, int y, u32 c);
+void gfx_line(surface *s, int x0, int y0, int x1, int y1, u32 c);
+void gfx_circle(surface *s, int cx, int cy, int r, u32 c, int fill);
+void gfx_glyph(surface *s, int x, int y, u8 ch, u32 fg, long bg, int scale); /* bg < 0: transparent */
+void gfx_text(surface *s, int x, int y, const char *str, size_t n, u32 fg, long bg, int scale);
+void gfx_blit(surface *dst, int dx, int dy, const u32 *src, int sw, int sh);
+
+/* ---- window manager (gui/wm.c) ---- */
+typedef struct window {
+    int used;
+    int x, y, w, h;   /* content rectangle on screen */
+    char title[48];
+    u32 *front;       /* what the compositor shows */
+    u32 *back;        /* canvas the app draws on (graphics windows) */
+    int canvas;       /* 0: shows `tty->term`, 1: shows the canvas */
+    tty *tty;
+    thread *owner;    /* killed when the window is closed; NULL = not closable */
+    u8 keys[256];     /* keys currently held (scancode, +0x80 for extended) */
+    int mx, my, mb;   /* mouse position inside the content, buttons */
+    u64 last_flip;
+} window;
+int wm_init(void);    /* 0 if graphics are available */
+int wm_active(void);
+void wm_tick(void);
+window *wm_create(const char *title, tty *t, thread *owner);
+void wm_destroy(window *w);
+int wm_set_canvas(window *w, int width, int height);
+void wm_set_text(window *w);
+void wm_present(window *w);
+void wm_set_title(window *w, const char *title);
+void wm_key(int code, int down, int alt, const char *chars);
+void wm_mouse(int dx, int dy, int buttons);
+int wm_screen_w(void);
+int wm_screen_h(void);
 
 /* ---- memory (kernel/mem.c) ---- */
 void mem_init(u32 mb_info);
@@ -144,7 +241,13 @@ void agent_reset(void);                  /* agent/agent.c */
 void agent_turn(const char *user_text);
 const char *agent_setting(const char *key);         /* "llm", "model", "path" */
 int agent_set(const char *key, const char *value);  /* 0 on success */
-int app_run(const char *name_or_path, strbuf *err); /* resolve + run interactively */
+/* agent/apps.c */
+/* Starts an app. Text mode: runs it in the foreground; returns 0, or -1 with
+ * the error. Graphics mode: runs it in its own window; returns 1 once it has
+ * been running for a moment, 0 if it already finished, -1 on error. */
+int app_launch(const char *name_or_path, strbuf *err);
+void app_list(void);
+int app_kill(int id);
 
 int kprintf(const char *fmt, ...);
 

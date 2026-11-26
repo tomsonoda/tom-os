@@ -15,7 +15,7 @@ PROMPT = "tom-os>"
 
 
 class VM:
-    def __init__(self, port):
+    def __init__(self, port, gui=False, monitor=None):
         # TOMOS_ISO=<path> boots the CD image through GRUB instead of loading
         # the kernel directly; the LLM address is then set with /set.
         self.iso = os.environ.get("TOMOS_ISO")
@@ -23,12 +23,14 @@ class VM:
             boot = ["-cdrom", os.path.join(ROOT, self.iso), "-boot", "d"]
         else:
             boot = ["-kernel", os.path.join(ROOT, "build", "tomos.elf"),
-                    "-append", "llm=10.0.2.2:%d model=mock" % port]
+                    "-append", "llm=10.0.2.2:%d model=mock%s" % (port, "" if gui else " gui=0")]
+        mon = ["-monitor", "unix:%s,server,nowait" % monitor] if monitor else ["-monitor", "none"]
         self.proc = subprocess.Popen(
             [os.environ.get("QEMU", "qemu-system-x86_64"), "-m", "256M", "-no-reboot",
-             "-display", "none", "-serial", "stdio", "-monitor", "none",
-             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + boot,
+             "-display", "none", "-serial", "stdio",
+             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + mon + boot,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.gui = gui
         self.raw = b""  # decoded as a whole: multi-byte characters arrive split
         self.pos = 0
         self.lock = threading.Lock()
@@ -81,8 +83,14 @@ def main():
         print("ok %2d - %s" % (steps, name))
 
     try:
-        step("boots to a prompt" + (" from the ISO" if vm.iso else ""),
-             lambda: (vm.expect("network up", 60), vm.expect(PROMPT)))
+        def boot():
+            if vm.iso:  # second GRUB entry is text mode (Ctrl-N moves down)
+                vm.expect("GNU GRUB", 60)
+                vm.send("\x0e\r")
+            vm.expect("network up", 60)
+            vm.expect(PROMPT)
+            vm.command("/info", "display: text", PROMPT)
+        step("boots to a text-mode prompt" + (" from the ISO" if vm.iso else ""), boot)
 
         step("/set changes the LLM server and model", lambda: (
             vm.command("/set llm 10.0.2.2:%d" % port, "llm = 10.0.2.2:%d" % port, PROMPT),
@@ -92,6 +100,13 @@ def main():
         step("Lua arithmetic and number formatting", lambda: vm.command(
             "/lua print(6*7, 0.1+0.2, 2^10, 10//3, string.format('%.3f %5d %g', math.pi, 42, 1e21))",
             "42\t0.3\t1024.0\t3\t3.142    42 1e+21", PROMPT))
+
+        def history():
+            vm.command("/lua print('his' .. 'tory', 1)", "history\t1", PROMPT)
+            vm.command("/lua print('second')", "second", PROMPT)
+            vm.command("\x1b[A\x1b[A", "history\t1", PROMPT)       # up twice: first command
+            vm.command("\x1b[A\x1b[A\x1b[B", "second", PROMPT)     # up, up, down
+        step("up/down arrows recall earlier commands", history)
 
         step("Lua errors are reported with a traceback", lambda: vm.command(
             "/lua error('boom')", "boom", "stack traceback", PROMPT))

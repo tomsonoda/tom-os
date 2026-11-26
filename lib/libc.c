@@ -13,7 +13,9 @@ int errno;
 /* ---- memory ---- */
 void *memcpy(void *d, const void *s, size_t n) {
     void *r = d;
-    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+    size_t words = n / 8, rest = n % 8; /* word copies are much faster under emulation */
+    __asm__ volatile("rep movsq" : "+D"(d), "+S"(s), "+c"(words) : : "memory");
+    __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(rest) : : "memory");
     return r;
 }
 

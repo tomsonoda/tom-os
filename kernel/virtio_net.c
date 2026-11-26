@@ -4,12 +4,12 @@
 #include "tomos.h"
 
 /* ------------------------------------------------------------------- PCI */
-static u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off) {
+u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off) {
     outl(0xCF8, 0x80000000u | ((u32)bus << 16) | ((u32)dev << 11) | ((u32)fn << 8) | (off & 0xFC));
     return inl(0xCFC);
 }
 
-static void pci_write(u8 bus, u8 dev, u8 fn, u8 off, u32 v) {
+void pci_write(u8 bus, u8 dev, u8 fn, u8 off, u32 v) {
     outl(0xCF8, 0x80000000u | ((u32)bus << 16) | ((u32)dev << 11) | ((u32)fn << 8) | (off & 0xFC));
     outl(0xCFC, v);
 }

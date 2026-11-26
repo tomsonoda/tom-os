@@ -39,7 +39,7 @@ CFLAGS := -std=gnu11 -O2 -g -ffreestanding -fno-stack-protector -fno-pic -fno-pi
           -nostdinc -isystem $(GCCINC) -isystem lib/include -D_LIBC_LIMITS_H_
 WARN   := -Wall -Wextra
 
-SRCS := $(wildcard kernel/*.c net/*.c lib/*.c fs/*.c agent/*.c lua/*.c)
+SRCS := $(wildcard kernel/*.c net/*.c lib/*.c fs/*.c agent/*.c lua/*.c gui/*.c)
 LUA_SRCS := $(wildcard third_party/lua/*.c)
 OBJS := $(BUILD)/arch/x86_64/boot.o \
         $(SRCS:%.c=$(BUILD)/%.o) $(LUA_SRCS:%.c=$(BUILD)/%.o)
@@ -51,8 +51,8 @@ LLM   ?= 10.0.2.2:8080
 MODEL ?= default
 MEM   ?= 256M
 QEMU_FLAGS := -m $(MEM) -no-reboot -kernel $(KERNEL) \
-              -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
-              -append "llm=$(LLM) model=$(MODEL)"
+              -netdev user,id=n0 -device virtio-net-pci,netdev=n0
+ARGS := llm=$(LLM) model=$(MODEL)
 
 ISO := $(BUILD)/tomos.iso
 
@@ -75,16 +75,23 @@ $(BUILD)/%.o: %.c kernel/tomos.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(WARN) -c $< -o $@
 
-# Serial console in this terminal. Ctrl-C goes to tom-os; quit QEMU with Ctrl-A X.
+# Text mode: the serial console in this terminal. Ctrl-C goes to tom-os;
+# quit QEMU with Ctrl-A X.
 run: $(KERNEL)
-	$(QEMU) $(QEMU_FLAGS) -nographic
+	$(QEMU) $(QEMU_FLAGS) -append "$(ARGS) gui=0" -nographic
 
-# VGA window plus serial console in this terminal.
+# Graphical mode: a QEMU window with the desktop. This terminal stays
+# connected to the shell as well (useful for typing non-ASCII text).
+run-gui: $(KERNEL)
+	$(QEMU) $(QEMU_FLAGS) -append "$(ARGS)" -serial mon:stdio
+
+# Text mode on the VGA screen in a QEMU window.
 run-vga: $(KERNEL)
-	$(QEMU) $(QEMU_FLAGS) -serial mon:stdio
+	$(QEMU) $(QEMU_FLAGS) -append "$(ARGS) gui=0" -serial mon:stdio
 
 test: $(KERNEL)
 	python3 tests/boot_test.py
+	python3 tests/gui_test.py
 
 # Bootable CD image (BIOS boot via GRUB). Needs grub-pc-bin, xorriso and mtools.
 iso: $(ISO)
@@ -103,8 +110,9 @@ run-iso: $(ISO)
 
 test-iso: $(ISO)
 	TOMOS_ISO=$(ISO) python3 tests/boot_test.py
+	TOMOS_ISO=$(ISO) python3 tests/gui_test.py
 
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run run-vga test iso run-iso test-iso clean
+.PHONY: all run run-gui run-vga test iso run-iso test-iso clean

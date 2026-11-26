@@ -1,6 +1,7 @@
 /* The top-level prompt: slash commands are handled locally, everything else
  * goes to the agent. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "../kernel/tomos.h"
 
@@ -10,6 +11,7 @@ static void cmd_help(void) {
         "Commands:\n"
         "  /apps          list files (apps are saved as apps/<name>.lua)\n"
         "  /run <name>    start an app (Ctrl-C stops it)\n"
+        "  /ps, /kill <id>  list and stop running apps (graphical mode)\n"
         "  /cat <path>    show a file\n"
         "  /rm <path>     delete a file\n"
         "  /lua <code>    run one line of Lua\n"
@@ -33,6 +35,7 @@ static void cmd_info(void) {
     } else {
         kprintf("network: no device\n");
     }
+    kprintf("display: %s\n", wm_active() ? "graphical (windows)" : "text");
     kprintf("llm    : http://%s%s  model=%s\n", agent_setting("llm"), agent_setting("path"),
             agent_setting("model"));
 }
@@ -72,9 +75,15 @@ static void command(char *line) {
     } else if (!strcmp(line, "/run")) {
         strbuf err;
         sb_init(&err);
-        if (!*arg) console_puts("usage: /run <name>\n");
-        else if (app_run(arg, &err) != 0) kprintf("[error] %s\n", sb_cstr(&err));
+        int r = *arg ? app_launch(arg, &err) : -2;
+        if (r == -2) console_puts("usage: /run <name>\n");
+        else if (r < 0) kprintf("[error] %s\n", sb_cstr(&err));
+        else if (r == 1) kprintf("%s is running in its own window\n", arg);
         sb_free(&err);
+    } else if (!strcmp(line, "/ps")) {
+        app_list();
+    } else if (!strcmp(line, "/kill")) {
+        if (app_kill(atoi(arg)) != 0) console_puts("usage: /kill <id>   (ids are shown by /ps)\n");
     } else if (!strcmp(line, "/cat")) {
         size_t len;
         const char *d = fs_read(arg, &len);
@@ -116,7 +125,7 @@ void shell_run(void) {
     static char line[4096];
     for (;;) {
         console_puts("\x1b[1;32mtom-os>\x1b[0m ");
-        int n = console_readline(line, sizeof line);
+        int n = console_readline(line, sizeof line, 1);
         if (n <= 0) continue;
         if (line[0] == '/') command(line);
         else agent_turn(line);

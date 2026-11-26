@@ -51,7 +51,7 @@ static void tsc_calibrate(void) {
 
 u64 time_ms(void) { return (rdtsc() - tsc_boot) / tsc_per_ms; }
 
-void cpu_idle(void) { __asm__ volatile("sti; hlt"); }
+void cpu_halt(void) { __asm__ volatile("sti; hlt"); }
 
 void sleep_ms(u64 ms) {
     u64 end = time_ms() + ms;

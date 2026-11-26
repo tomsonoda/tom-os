@@ -11,10 +11,20 @@
 
 enum { RUN_OK, ABORT_BREAK, ABORT_TIMEOUT, ABORT_EXIT };
 
-static int g_abort;       /* sticky: once set, every hook call raises again */
-static int g_interactive; /* console input allowed */
-static u64 g_deadline;    /* 0 = none */
-static size_t g_mem, g_mem_limit;
+/* State of one run. Several apps can run at once, each on its own thread,
+ * so this hangs off the thread rather than being global. */
+typedef struct {
+    int abort;       /* sticky: once set, every hook call raises again */
+    int interactive; /* console input allowed */
+    u64 deadline;    /* 0 = none */
+    size_t mem, mem_limit;
+} runctx;
+#define CTX ((runctx *)thread_data())
+#define g_abort (CTX->abort)
+#define g_interactive (CTX->interactive)
+#define g_deadline (CTX->deadline)
+#define g_mem (CTX->mem)
+#define g_mem_limit (CTX->mem_limit)
 
 static const char *abort_msg(void) {
     switch (g_abort) {
@@ -26,7 +36,7 @@ static const char *abort_msg(void) {
 
 static int check_abort(void) {
     if (!g_abort) {
-        if (console_break_pending()) g_abort = ABORT_BREAK;
+        if (thread_killed() || console_break_pending()) g_abort = ABORT_BREAK;
         else if (g_deadline && time_ms() > g_deadline) g_abort = ABORT_TIMEOUT;
     }
     return g_abort;
@@ -35,6 +45,7 @@ static int check_abort(void) {
 static void hook(lua_State *L, lua_Debug *ar) {
     (void)ar;
     if (check_abort()) luaL_error(L, "%s", abort_msg());
+    sched_yield(); /* share the CPU with other windows and the shell */
 }
 
 static int raise_break(lua_State *L) {
@@ -69,13 +80,13 @@ typedef struct {
 
 /* Pull one more line from the console into the stdin buffer. 0 on EOF. */
 static int stdin_fill(lua_State *L, lfile *f) {
-    static char line[2048];
+    char line[1024];
     if (f->kind != 1 || !g_interactive) return 0;
     if (f->pos >= f->buf.len) {
         f->buf.len = 0;
         f->pos = 0;
     }
-    int n = console_readline(line, sizeof line);
+    int n = console_readline(line, sizeof line, 0);
     if (n == KEY_BREAK) return raise_break(L);
     sb_put(&f->buf, line, (size_t)n);
     sb_putc(&f->buf, '\n');
@@ -559,7 +570,6 @@ static int t_sleep(lua_State *L) {
     u64 end = time_ms() + (u64)(ms > 0 ? ms : 0);
     while (time_ms() < end) {
         if (check_abort()) return luaL_error(L, "%s", abort_msg());
-        net_poll();
         cpu_idle();
     }
     return 0;
@@ -666,6 +676,172 @@ static const luaL_Reg tomos_funcs[] = {
     {"time_ms", t_time_ms}, {"files", t_files}, {"read_file", t_read_file},
     {"write_file", t_write_file}, {NULL, NULL}};
 
+/* ------------------------------------------------------------------- gfx */
+/* Graphics for apps that run in their own window (graphics mode only). */
+static window *gfx_window(lua_State *L, int need_canvas) {
+    window *w = thread_window();
+    if (!w || !w->owner)
+        luaL_error(L, "graphics are not available here (needs the GUI and an app started "
+                      "with /run or launch_app)");
+    if (need_canvas && !w->canvas) luaL_error(L, "call gfx.mode(width, height) first");
+    return w;
+}
+
+static void gfx_surface(lua_State *L, surface *s) {
+    window *w = gfx_window(L, 1);
+    surface_init(s, w->back, w->w, w->h);
+}
+
+static int argi(lua_State *L, int idx) { return (int)luaL_checknumber(L, idx); }
+static u32 argcolor(lua_State *L, int idx) { return (u32)luaL_optinteger(L, idx, 0xFFFFFF) & 0xFFFFFF; }
+
+static int g_mode(lua_State *L) {
+    window *w = gfx_window(L, 0);
+    int width = argi(L, 1), height = argi(L, 2);
+    if (width < 64) width = 64;
+    if (height < 32) height = 32;
+    if (width > wm_screen_w() - 4) width = wm_screen_w() - 4;
+    if (height > wm_screen_h() - 28) height = wm_screen_h() - 28;
+    if (wm_set_canvas(w, width, height) != 0) return luaL_error(L, "out of memory");
+    if (lua_isstring(L, 3)) wm_set_title(w, lua_tostring(L, 3));
+    lua_pushinteger(L, width);
+    lua_pushinteger(L, height);
+    return 2;
+}
+
+static int g_clear(lua_State *L) {
+    surface s;
+    gfx_surface(L, &s);
+    gfx_fill(&s, 0, 0, s.w, s.h, (u32)luaL_optinteger(L, 1, 0) & 0xFFFFFF);
+    return 0;
+}
+
+static int g_rect(lua_State *L) {
+    surface s;
+    gfx_surface(L, &s);
+    gfx_fill(&s, argi(L, 1), argi(L, 2), argi(L, 3), argi(L, 4), argcolor(L, 5));
+    return 0;
+}
+
+static int g_box(lua_State *L) {
+    surface s;
+    gfx_surface(L, &s);
+    int x = argi(L, 1), y = argi(L, 2), w = argi(L, 3), h = argi(L, 4);
+    u32 c = argcolor(L, 5);
+    gfx_fill(&s, x, y, w, 1, c);
+    gfx_fill(&s, x, y + h - 1, w, 1, c);
+    gfx_fill(&s, x, y, 1, h, c);
+    gfx_fill(&s, x + w - 1, y, 1, h, c);
+    return 0;
+}
+
+static int g_pixel(lua_State *L) {
+    surface s;
+    gfx_surface(L, &s);
+    gfx_pixel(&s, argi(L, 1), argi(L, 2), argcolor(L, 3));
+    return 0;
+}
+
+static int g_line(lua_State *L) {
+    surface s;
+    gfx_surface(L, &s);
+    gfx_line(&s, argi(L, 1), argi(L, 2), argi(L, 3), argi(L, 4), argcolor(L, 5));
+    return 0;
+}
+
+static int g_circle(lua_State *L) {
+    surface s;
+    gfx_surface(L, &s);
+    gfx_circle(&s, argi(L, 1), argi(L, 2), argi(L, 3), argcolor(L, 4), lua_toboolean(L, 5));
+    return 0;
+}
+
+static int g_text(lua_State *L) {
+    surface s;
+    size_t len;
+    gfx_surface(L, &s);
+    int x = argi(L, 1), y = argi(L, 2), scale = (int)luaL_optinteger(L, 5, 1);
+    u32 color = argcolor(L, 4);
+    const char *str = luaL_tolstring(L, 3, &len); /* pushes the converted string */
+    gfx_text(&s, x, y, str, len, color, -1, scale);
+    return 0;
+}
+
+/* gfx.flip([fps]): show what was drawn, then wait for the next frame. */
+static int g_flip(lua_State *L) {
+    window *w = gfx_window(L, 1);
+    lua_Number fps = luaL_optnumber(L, 1, 60);
+    u64 frame = fps >= 1 ? (u64)(1000.0 / fps) : 1000;
+    wm_present(w);
+    do {
+        if (check_abort()) return luaL_error(L, "%s", abort_msg());
+        cpu_idle();
+    } while (time_ms() - w->last_flip < frame);
+    w->last_flip = time_ms();
+    return 0;
+}
+
+static const struct {
+    const char *name;
+    int code;
+} key_names[] = {
+    {"left", 0xCB}, {"right", 0xCD}, {"up", 0xC8}, {"down", 0xD0}, {"space", 0x39},
+    {"enter", 0x1C}, {"escape", 0x01}, {"esc", 0x01}, {"tab", 0x0F}, {"backspace", 0x0E},
+    {"shift", 0x2A}, {"ctrl", 0x1D}, {"a", 0x1E}, {"b", 0x30}, {"c", 0x2E}, {"d", 0x20},
+    {"e", 0x12}, {"f", 0x21}, {"g", 0x22}, {"h", 0x23}, {"i", 0x17}, {"j", 0x24}, {"k", 0x25},
+    {"l", 0x26}, {"m", 0x32}, {"n", 0x31}, {"o", 0x18}, {"p", 0x19}, {"q", 0x10}, {"r", 0x13},
+    {"s", 0x1F}, {"t", 0x14}, {"u", 0x16}, {"v", 0x2F}, {"w", 0x11}, {"x", 0x2D}, {"y", 0x15},
+    {"z", 0x2C}, {"1", 0x02}, {"2", 0x03}, {"3", 0x04}, {"4", 0x05}, {"5", 0x06}, {"6", 0x07},
+    {"7", 0x08}, {"8", 0x09}, {"9", 0x0A}, {"0", 0x0B}};
+
+/* gfx.key(name): is the key held down right now? */
+static int g_key(lua_State *L) {
+    window *w = gfx_window(L, 0);
+    const char *name = luaL_checkstring(L, 1);
+    for (size_t i = 0; i < sizeof key_names / sizeof *key_names; i++) {
+        if (strcmp(key_names[i].name, name) == 0) {
+            int code = key_names[i].code;
+            int held = w->keys[code];
+            if (code == 0x2A) held |= w->keys[0x36];        /* either shift */
+            if (code == 0x1D) held |= w->keys[0x9D];        /* either ctrl */
+            if (code == 0x1C) held |= w->keys[0x9C];        /* keypad enter */
+            lua_pushboolean(L, held);
+            return 1;
+        }
+    }
+    return luaL_error(L, "unknown key name '%s'", name);
+}
+
+static int g_mouse(lua_State *L) {
+    window *w = gfx_window(L, 0);
+    lua_pushinteger(L, w->mx);
+    lua_pushinteger(L, w->my);
+    lua_pushboolean(L, w->mb & 1);
+    lua_pushboolean(L, w->mb & 2);
+    return 4;
+}
+
+static int g_size(lua_State *L) {
+    window *w = gfx_window(L, 0);
+    lua_pushinteger(L, w->w);
+    lua_pushinteger(L, w->h);
+    return 2;
+}
+
+static int g_rgb(lua_State *L) {
+    int r = argi(L, 1), g = argi(L, 2), b = argi(L, 3);
+    r = r < 0 ? 0 : r > 255 ? 255 : r;
+    g = g < 0 ? 0 : g > 255 ? 255 : g;
+    b = b < 0 ? 0 : b > 255 ? 255 : b;
+    lua_pushinteger(L, (r << 16) | (g << 8) | b);
+    return 1;
+}
+
+static const luaL_Reg gfx_funcs[] = {
+    {"mode", g_mode}, {"clear", g_clear}, {"rect", g_rect}, {"box", g_box}, {"pixel", g_pixel},
+    {"line", g_line}, {"circle", g_circle}, {"text", g_text}, {"flip", g_flip}, {"key", g_key},
+    {"mouse", g_mouse}, {"size", g_size}, {"rgb", g_rgb}, {NULL, NULL}};
+
 /* require(): loads modules from the RAM filesystem. */
 static int l_require(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
@@ -735,7 +911,11 @@ static int pmain(lua_State *L) {
     lua_setfield(L, -2, "width");
     lua_pushinteger(L, 25);
     lua_setfield(L, -2, "height");
+    lua_pushboolean(L, wm_active());
+    lua_setfield(L, -2, "gui");
     lua_setglobal(L, "tomos");
+    luaL_newlib(L, gfx_funcs);
+    lua_setglobal(L, "gfx");
     lua_pushcfunction(L, l_require);
     lua_setglobal(L, "require");
 
@@ -750,23 +930,22 @@ static int pmain(lua_State *L) {
 
 int lua_run(const char *name, const char *code, size_t len, int interactive, int timeout_ms,
             strbuf *out, strbuf *err) {
-    static int running;
-    if (running) {
-        sb_puts(err, "a Lua program is already running");
+    if (thread_data()) {
+        sb_puts(err, "a Lua program is already running on this thread");
         return -1;
     }
+    runctx ctx = {0};
+    thread_set_data(&ctx);
     size_t avail = mem_total() - mem_used();
-    g_mem = 0;
-    g_mem_limit = avail / 2;
+    ctx.mem_limit = avail / 2;
+    ctx.interactive = interactive;
+    ctx.deadline = timeout_ms > 0 ? time_ms() + (u64)timeout_ms : 0;
     lua_State *L = lua_newstate(l_alloc, NULL);
     if (!L) {
+        thread_set_data(NULL);
         sb_puts(err, "out of memory");
         return -1;
     }
-    running = 1;
-    g_abort = RUN_OK;
-    g_interactive = interactive;
-    g_deadline = timeout_ms > 0 ? time_ms() + (u64)timeout_ms : 0;
     console_clear_break();
     if (!interactive) console_capture(out, 16384);
 
@@ -775,15 +954,15 @@ int lua_run(const char *name, const char *code, size_t len, int interactive, int
     lua_pushlightuserdata(L, &c);
     int status = lua_pcall(L, 1, 0, 0);
     int rc = 0;
-    if (status != LUA_OK && g_abort != ABORT_EXIT) {
+    if (status != LUA_OK && ctx.abort != ABORT_EXIT) {
         const char *msg = lua_tostring(L, -1);
         sb_puts(err, msg ? msg : "unknown error");
         rc = -1;
     }
     /* Don't let finalizers of a runaway program run forever either. */
-    g_deadline = time_ms() + 2000;
+    ctx.deadline = time_ms() + 2000;
     lua_close(L);
-    console_capture(NULL, 0);
-    running = 0;
+    if (!interactive) console_capture(NULL, 0);
+    thread_set_data(NULL);
     return rc;
 }

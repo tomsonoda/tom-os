@@ -15,32 +15,51 @@ static const char SYSTEM_PROMPT[] =
     "user runs it immediately.\n"
     "\n"
     "Environment:\n"
-    "- Text console, 80x25 characters. ANSI escape sequences work (colors, cursor movement, "
-    "clear screen). On the VGA screen only ASCII is displayed, so keep app UI text in ASCII "
-    "unless the user asks otherwise.\n"
-    "- Apps are Lua 5.4 scripts. Available: base library, string, table, math, utf8, "
-    "coroutine, plus:\n"
+    "- Apps are Lua 5.4 scripts saved as apps/<name>.lua in a flat in-memory filesystem "
+    "(lost on reboot). The user starts one with /run <name> and can stop it with Ctrl-C.\n"
+    "- Available libraries: base, string, table, math, utf8, coroutine, plus:\n"
     "  io.write, io.read (formats 'l', 'n', 'a', 'L', or a byte count), io.lines, "
     "io.open(path, mode) with file:read/write/lines/seek/close.\n"
     "  os.time, os.date, os.clock, os.remove, os.rename, os.exit.\n"
-    "  tomos.cls() clears the screen; tomos.getkey([timeout_ms]) returns one key without "
+    "  tomos.cls() clears the text screen; tomos.getkey([timeout_ms]) returns one key without "
     "waiting for Enter ('a', 'up', 'down', 'left', 'right', 'enter', 'esc', 'backspace', "
     "'tab') or nil on timeout; tomos.sleep(ms); tomos.readline([prompt]); tomos.time_ms(); "
-    "tomos.files(); tomos.read_file(path); tomos.write_file(path, data).\n"
+    "tomos.files(); tomos.read_file(path); tomos.write_file(path, data); tomos.gui is true "
+    "when graphics are available.\n"
     "  require('name') loads name.lua, apps/name.lua or lib/name.lua.\n"
+    "- Text apps get an 80x25 character terminal. ANSI escape sequences work (colors, cursor "
+    "movement, clear screen). Only ASCII can be displayed on screen, so keep app text in "
+    "ASCII.\n"
+    "- Graphics (only when graphical mode is on, see the end of this message): every app runs "
+    "in its own window, next to the others.\n"
+    "  gfx.mode(width, height [, title]) turns the app's window into a pixel canvas (for "
+    "example 640x480; at most about 1000x720). Colors are integers 0xRRGGBB.\n"
+    "  Drawing goes to a hidden buffer: gfx.clear([color]), gfx.rect(x, y, w, h, color) "
+    "filled, gfx.box(x, y, w, h, color) outline, gfx.line(x1, y1, x2, y2, color), "
+    "gfx.circle(x, y, r, color [, filled]), gfx.pixel(x, y, color), gfx.text(x, y, string, "
+    "color [, scale]) with an 8x16 font, gfx.rgb(r, g, b), gfx.size().\n"
+    "  gfx.flip([fps]) shows the buffer and waits for the next frame (default 60 per second); "
+    "call it once per frame.\n"
+    "  gfx.key(name) is true while a key is held: 'left', 'right', 'up', 'down', 'space', "
+    "'enter', 'escape', 'shift', 'ctrl', letters and digits. Use it for game controls; "
+    "tomos.getkey(0) still returns typed keys one at a time. gfx.mouse() returns x, y, "
+    "left_down, right_down.\n"
+    "  A typical game: gfx.mode(...); then loop { read gfx.key, update, gfx.clear, draw, "
+    "gfx.flip() } until gfx.key('escape').\n"
     "- Not available: os.execute, io.popen, the debug and package libraries, networking, "
-    "graphics, sound.\n"
-    "- Files live in a flat in-memory filesystem and are lost on reboot. Save apps as "
-    "apps/<name>.lua. The user starts an app with the command /run <name> and can stop any app "
-    "with Ctrl-C.\n"
+    "sound, images loaded from files.\n"
     "\n"
     "How to work:\n"
     "- To build an app: write it with write_file, check it with run_lua when a non-interactive "
     "check is possible (for example loading the file with loadfile to catch syntax errors, or "
     "testing pure functions), fix any errors, then either call launch_app so the user can use "
     "it right away or tell them the /run command.\n"
-    "- run_lua has no keyboard input: io.read and tomos.getkey return nil there, and it stops "
-    "after 10 seconds. Never run an interactive app with run_lua; use launch_app for that.\n"
+    "- run_lua has no keyboard input and no window: io.read and tomos.getkey return nil there, "
+    "gfx calls fail, and it stops after 10 seconds. Never run an interactive app with run_lua; "
+    "use launch_app for that. In graphical mode launch_app returns a few seconds after the app "
+    "starts; errors that happen later are shown in the app's window.\n"
+    "- When the user asks for a game or anything visual and graphical mode is on, use gfx. "
+    "In text mode use the terminal instead.\n"
     "- Every interactive app must have an obvious way to quit (for example the q key).\n"
     "- For questions that need no program, just answer briefly.\n"
     "- Reply in the language the user writes in. Keep answers short; the screen is small.";
@@ -173,7 +192,15 @@ static void build_request(strbuf *b, const char *model) {
     sb_puts(b, ",\"stream\":false,\"messages\":[{");
     put_field(b, "role", "system");
     sb_putc(b, ',');
-    put_field(b, "content", SYSTEM_PROMPT);
+    {
+        strbuf sys;
+        sb_init(&sys);
+        sb_puts(&sys, SYSTEM_PROMPT);
+        sb_puts(&sys, wm_active() ? "\n\nGraphical mode is ON: gfx is available and apps run in windows."
+                                  : "\n\nGraphical mode is OFF (text mode): gfx is not available.");
+        put_field(b, "content", sb_cstr(&sys));
+        sb_free(&sys);
+    }
     sb_putc(b, '}');
     for (int i = 0; i < nmsgs; i++) {
         message *m = &msgs[i];
@@ -276,35 +303,6 @@ static int llm_call(strbuf *errmsg) {
 }
 
 /* ----------------------------------------------------------------- tools */
-int app_run(const char *name, strbuf *err) {
-    char path[200];
-    size_t len;
-    const char *src = fs_read(name, &len);
-    snprintf(path, sizeof path, "%s", name);
-    if (!src) {
-        snprintf(path, sizeof path, "apps/%s.lua", name);
-        src = fs_read(path, &len);
-    }
-    if (!src) {
-        snprintf(path, sizeof path, "apps/%s", name);
-        src = fs_read(path, &len);
-    }
-    if (!src) {
-        sb_printf(err, "no such app: %s", name);
-        return -1;
-    }
-    /* run from a private copy: the app may rewrite its own file */
-    char *copy = strndup(src, len);
-    if (!copy) {
-        sb_puts(err, "out of memory");
-        return -1;
-    }
-    int r = lua_run(path, copy, len, 1, 0, NULL, err);
-    free(copy);
-    console_puts("\x1b[0m\n");
-    return r;
-}
-
 static void exec_tool(const toolcall *tc, strbuf *out) {
     jv *args = json_parse(tc->args, strlen(tc->args));
     const char *path = json_str(json_get(args, "path"));
@@ -359,7 +357,10 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
             strbuf err;
             sb_init(&err);
             kprintf("  [launch_app] %s\n", path);
-            if (app_run(path, &err) == 0) sb_puts(out, "the app ran and exited normally");
+            int r = app_launch(path, &err);
+            if (r == 0) sb_puts(out, "the app ran and exited normally");
+            else if (r == 1)
+                sb_puts(out, "the app started without errors and is running in its own window");
             else {
                 kprintf("  [app error] %s\n", sb_cstr(&err));
                 sb_printf(out, "the app stopped with an error: %s", sb_cstr(&err));
