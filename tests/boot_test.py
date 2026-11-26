@@ -23,7 +23,7 @@ class VM:
              "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0",
              "-append", "llm=10.0.2.2:%d model=mock" % port],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        self.out = ""
+        self.raw = b""  # decoded as a whole: multi-byte characters arrive split
         self.pos = 0
         self.lock = threading.Lock()
         threading.Thread(target=self._reader, daemon=True).start()
@@ -34,7 +34,7 @@ class VM:
             if not data:
                 return
             with self.lock:
-                self.out += data.decode("utf-8", "replace")
+                self.raw += data
 
     def send(self, text):
         self.proc.stdin.write(text.encode())
@@ -45,6 +45,7 @@ class VM:
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self.lock:
+                self.out = self.raw.decode("utf-8", "replace")
                 idx = self.out.find(needle, self.pos)
                 if idx >= 0:
                     self.pos = idx + len(needle)
