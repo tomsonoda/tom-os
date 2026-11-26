@@ -50,9 +50,21 @@ KERNEL := $(BUILD)/tomos.elf
 LLM   ?= 10.0.2.2:8080
 MODEL ?= default
 MEM   ?= 256M
-QEMU_FLAGS := -m $(MEM) -no-reboot -kernel $(KERNEL) \
+# Screen size and scale for graphical mode, e.g. RES=1920x1080 or
+# RES=2048x1536 SCALE=2 (the same layout as 1024x768, twice as big).
+RES   ?=
+SCALE ?=
+# 64 MiB of video memory allows screens up to about 4K.
+QEMU_FLAGS := -m $(MEM) -no-reboot -kernel $(KERNEL) -vga none -device VGA,vgamem_mb=64 \
               -netdev user,id=n0 -device virtio-net-pci,netdev=n0
-ARGS := llm=$(LLM) model=$(MODEL)
+ARGS := llm=$(LLM) model=$(MODEL) $(if $(RES),res=$(RES)) $(if $(SCALE),scale=$(SCALE))
+
+# On macOS, the picture follows the size of the QEMU window.
+ifeq ($(shell uname -s),Darwin)
+QEMU_DISPLAY ?= -display cocoa,zoom-to-fit=on
+else
+QEMU_DISPLAY ?=
+endif
 
 ISO := $(BUILD)/tomos.iso
 
@@ -83,7 +95,7 @@ run: $(KERNEL)
 # Graphical mode: a QEMU window with the desktop. This terminal stays
 # connected to the shell as well (useful for typing non-ASCII text).
 run-gui: $(KERNEL)
-	$(QEMU) $(QEMU_FLAGS) -append "$(ARGS)" -serial mon:stdio
+	$(QEMU) $(QEMU_FLAGS) $(QEMU_DISPLAY) -append "$(ARGS)" -serial mon:stdio
 
 # Text mode on the VGA screen in a QEMU window.
 run-vga: $(KERNEL)
@@ -105,7 +117,7 @@ $(ISO): $(KERNEL) iso/grub.cfg
 	@ls -l $@ | awk '{printf "built %s (%.1f MiB)\n", $$NF, $$5 / 1048576}'
 
 run-iso: $(ISO)
-	$(QEMU) -m $(MEM) -no-reboot -cdrom $(ISO) -boot d \
+	$(QEMU) -m $(MEM) -no-reboot -cdrom $(ISO) -boot d -vga none -device VGA,vgamem_mb=64 $(QEMU_DISPLAY) \
 	    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
 
 test-iso: $(ISO)

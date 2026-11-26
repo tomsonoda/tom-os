@@ -123,7 +123,10 @@ typedef struct surface {
     int w, h;
     int cx0, cy0, cx1, cy1; /* clip rectangle, exclusive upper bounds */
 } surface;
-int fb_init(int w, int h);  /* switch to a linear framebuffer; 0 on success */
+/* Switches to a linear framebuffer: 0 on success, -2 if the adapter has too
+ * little video memory, -1 if graphics are unavailable or the mode failed. */
+int fb_init(int w, int h);
+size_t fb_vram(void);
 extern surface fb_screen;
 void surface_init(surface *s, u32 *px, int w, int h);
 void gfx_fill(surface *s, int x, int y, int w, int h, u32 c);
@@ -148,7 +151,14 @@ typedef struct window {
     int mx, my, mb;   /* mouse position inside the content, buttons */
     u64 last_flip;
 } window;
-int wm_init(void);    /* 0 if graphics are available */
+/* The screen is w x h device pixels; everything is drawn at 1/scale of that
+ * and enlarged by `scale` (1 to 4) on the way out. scale 0 picks a default. */
+int wm_init(int w, int h, int scale); /* 0 if graphics are available */
+int wm_set_display(int w, int h, int scale, strbuf *err); /* change at run time */
+int wm_display_w(void);
+int wm_display_h(void);
+int wm_scale(void);
+int wm_default_scale(int w, int h);
 int wm_active(void);
 void wm_tick(void);
 window *wm_create(const char *title, tty *t, thread *owner);

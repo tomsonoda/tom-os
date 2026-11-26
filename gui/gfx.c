@@ -40,21 +40,38 @@ static int read_vga_font(void) {
     return bits != 0;
 }
 
-int fb_init(int w, int h) {
-    if ((bga_read(0) & 0xFFF0) != 0xB0C0) return -1;
+static u64 fb_addr;
 
+/* Finds the adapter and reads the font; only possible once, while the
+ * adapter is still in text mode. */
+static int fb_probe(void) {
+    static int state; /* 0 not tried, 1 ok, -1 unavailable */
+    if (state) return state;
+    state = -1;
+    if ((bga_read(0) & 0xFFF0) != 0xB0C0) return state;
     /* The framebuffer is BAR0 of the display adapter. */
-    u64 addr = 0;
-    for (int bus = 0; bus < 256 && !addr; bus++) {
-        for (int dev = 0; dev < 32 && !addr; dev++) {
+    for (int bus = 0; bus < 256 && !fb_addr; bus++) {
+        for (int dev = 0; dev < 32 && !fb_addr; dev++) {
             if ((pci_read((u8)bus, (u8)dev, 0, 0) & 0xFFFF) == 0xFFFF) continue;
             if ((pci_read((u8)bus, (u8)dev, 0, 0x08) >> 24) != 0x03) continue;
             u32 bar0 = pci_read((u8)bus, (u8)dev, 0, 0x10);
-            if (!(bar0 & 1)) addr = bar0 & ~0xFULL;
+            if (!(bar0 & 1)) fb_addr = bar0 & ~0xFULL;
         }
     }
-    if (!addr || addr >= 0xFFFFFFFFULL - (u64)w * (u64)h * 4) return -1;
-    if (!read_vga_font()) return -1;
+    if (!fb_addr || !read_vga_font()) return state;
+    return state = 1;
+}
+
+size_t fb_vram(void) {
+    if (fb_probe() < 0) return 0;
+    size_t v = (size_t)bga_read(0x0A) * 65536; /* video memory in 64 KiB units */
+    return v ? v : (size_t)16 << 20;
+}
+
+int fb_init(int w, int h) {
+    if (fb_probe() < 0) return -1;
+    if ((size_t)w * (size_t)h * 4 > fb_vram()) return -2;
+    if (fb_addr + (u64)w * (u64)h * 4 > 0x100000000ULL) return -1; /* only 4 GiB are mapped */
 
     bga_write(4, 0); /* disable while changing the mode */
     bga_write(1, (u16)w);
@@ -63,7 +80,7 @@ int fb_init(int w, int h) {
     bga_write(4, 0x41); /* enabled + linear framebuffer */
     if (bga_read(1) != w || bga_read(2) != h) return -1;
 
-    surface_init(&fb_screen, (u32 *)addr, w, h);
+    surface_init(&fb_screen, (u32 *)fb_addr, w, h);
     return 0;
 }
 

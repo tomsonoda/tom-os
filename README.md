@@ -26,6 +26,7 @@ First milestone. Runs on x86-64 under QEMU.
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
 | Serial and VGA text consoles | Non-ASCII text on screen (only ASCII glyphs) |
 | Graphical desktop: windows, mouse, apps that draw pixels | Sound, GPU acceleration |
+| Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
 | Several apps running at once, each in its own window | Process isolation between apps |
 | Booting from an ISO (BIOS) | UEFI boot, installing to disk |
 | In-memory filesystem | Storage that survives a reboot |
@@ -107,6 +108,22 @@ You can write to the agent in any language from that terminal. The screen itself
 
 The up and down arrow keys recall earlier lines at the `tom-os>` prompt.
 
+### Screen size
+
+The graphical desktop starts at 1024x768. Larger screens are available at boot or at any time:
+
+| | At boot | While running |
+|---|---|---|
+| More room | `make run-gui RES=1920x1080` | `/display 1920x1080` |
+| Everything twice as big | `make run-gui RES=2048x1536` | `/display 2048x1536` |
+| Choose the scale | `make run-gui RES=2560x1600 SCALE=2` | `/display 2560x1600 2` |
+
+The scale (1 to 4) enlarges everything, so text stays sharp on large or high-resolution displays. Screens of 2048x1200 and larger use scale 2 unless another scale is given. After scaling, at least 800x600 must remain. The kernel arguments are `res=WIDTHxHEIGHT` and `scale=N`, and the ISO menu has entries for the large and wide sizes.
+
+Sizes above 1920x1080 need more video memory than QEMU gives by default. The `make` targets start QEMU with `-vga none -device VGA,vgamem_mb=64`; add the same options when starting QEMU by hand.
+
+On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, so the picture is enlarged to fill the QEMU window when you resize or maximize it. Scaling by QEMU makes text a little blurry; for the sharpest picture, pick a size with `/display` that matches the window. Override the QEMU display options with `QEMU_DISPLAY=...`.
+
 ### The desktop (graphical mode)
 
 - Click a window to bring it to the front. Drag its title bar to move it. Click the red box to close an app.
@@ -121,6 +138,7 @@ The up and down arrow keys recall earlier lines at the `tom-os>` prompt.
 | `/apps` | List files (apps are saved as `apps/<name>.lua`) |
 | `/run <name>` | Start an app (graphical mode: in a new window) |
 | `/ps` `/kill <id>` | List and stop running apps (graphical mode) |
+| `/display <w>x<h> [scale]` | Change the screen size (graphical mode) |
 | `/cat <path>` `/rm <path>` | Show or delete a file |
 | `/lua <code>` | Run one line of Lua |
 | `/clear` | Forget the conversation |
@@ -152,6 +170,7 @@ make run-gui   # graphical desktop; or: make run for text mode in the terminal
 ```sh
 brew install qemu
 qemu-system-x86_64 -m 256M -cdrom tomos.iso -boot d \
+  -vga none -device VGA,vgamem_mb=64 -display cocoa,zoom-to-fit=on \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
 ```
 
@@ -164,6 +183,7 @@ UTM is a virtual machine app for macOS that puts a settings UI on top of QEMU. C
 - Architecture: x86_64
 - Boot: disable UEFI boot (use BIOS)
 - Memory: 256 MB or more
+- Display: the default card works up to 1920x1080; for larger sizes, add `-device VGA,vgamem_mb=64` under QEMU arguments (and remove the default display device)
 - Network: "Emulated VLAN" with a virtio-net-pci card (the default "Shared Network" will not connect)
 - CD/DVD: `tomos.iso`
 
@@ -267,7 +287,7 @@ end
 - The conversation history is never trimmed. Use `/clear` when it gets long.
 - Booting on real PC hardware has not been tested. virtio-net is the only network driver, and graphical mode needs the display interface of QEMU's standard VGA adapter.
 - The mode is chosen at boot; switching between graphical and text mode needs a reboot.
-- The screen resolution is fixed at 1024x768 and windows cannot be resized by the user.
+- Windows cannot be resized by the user, and the screen size does not follow the host window by itself (QEMU scales the picture; `/display` changes the real size).
 
 ## Possible next steps
 

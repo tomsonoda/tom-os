@@ -32,7 +32,9 @@ static const char *const cursor_shape[] = {
 #define CURSOR_H 17
 
 static int active;
-static surface shadow; /* composed image, copied to the framebuffer */
+static surface shadow; /* composed image at 1/scale size, copied to the framebuffer */
+static int scale = 1;
+static u32 *line_buf;  /* one scaled-up row */
 static window windows[MAX_WINDOWS];
 static window *zorder[MAX_WINDOWS]; /* bottom .. top; the top window has focus */
 static int nwin;
@@ -45,6 +47,12 @@ static u64 last_compose;
 int wm_active(void) { return active; }
 int wm_screen_w(void) { return shadow.w; }
 int wm_screen_h(void) { return shadow.h; }
+int wm_display_w(void) { return fb_screen.w; }
+int wm_display_h(void) { return fb_screen.h; }
+int wm_scale(void) { return scale; }
+
+/* Large screens get everything drawn twice as big, so text stays readable. */
+int wm_default_scale(int w, int h) { return w >= 2048 && h >= 1200 ? 2 : 1; }
 
 static void damage(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) return;
@@ -234,9 +242,23 @@ static void compose(void) {
             if (c != ' ') gfx_pixel(&shadow, mouse_x + col, mouse_y + row, c == 'X' ? 0x000000 : 0xFFFFFF);
         }
     }
-    for (int y = y0; y < y1; y++)
-        memcpy(fb_screen.px + (size_t)y * shadow.w + x0, shadow.px + (size_t)y * shadow.w + x0,
-               (size_t)(x1 - x0) * 4);
+    if (scale == 1) {
+        for (int y = y0; y < y1; y++)
+            memcpy(fb_screen.px + (size_t)y * fb_screen.w + x0,
+                   shadow.px + (size_t)y * shadow.w + x0, (size_t)(x1 - x0) * 4);
+        return;
+    }
+    /* enlarge: every pixel becomes a scale x scale block */
+    size_t n = (size_t)(x1 - x0) * (size_t)scale;
+    for (int y = y0; y < y1; y++) {
+        const u32 *src = shadow.px + (size_t)y * shadow.w;
+        u32 *out = line_buf;
+        for (int x = x0; x < x1; x++)
+            for (int k = 0; k < scale; k++) *out++ = src[x];
+        for (int k = 0; k < scale; k++)
+            memcpy(fb_screen.px + (size_t)(y * scale + k) * fb_screen.w + (size_t)x0 * scale,
+                   line_buf, n * 4);
+    }
 }
 
 void wm_tick(void) {
@@ -327,19 +349,69 @@ void wm_mouse(int dx, int dy, int buttons) {
     }
 }
 
-int wm_init(void) {
-    const int W = 1024, H = 768;
-    u32 *px = malloc((size_t)W * H * 4);
-    if (!px) return -1;
-    if (fb_init(W, H) != 0) {
-        free(px);
+#define MIN_W 800
+#define MIN_H 600
+
+/* Allocates the buffers for a display mode and switches to it. */
+static int set_mode(int w, int h, int sc, strbuf *err) {
+    if (sc <= 0) sc = wm_default_scale(w, h);
+    if (sc > 4 || w > 8192 || h > 8192 || w <= 0 || h <= 0) {
+        if (err) sb_puts(err, "unsupported size or scale (scale must be 1 to 4)");
         return -1;
     }
-    surface_init(&shadow, px, W, H);
-    mouse_x = W / 2;
-    mouse_y = H / 2;
+    int lw = w / sc, lh = h / sc;
+    if (lw < MIN_W || lh < MIN_H) {
+        if (err)
+            sb_printf(err, "%dx%d at scale %d leaves only %dx%d; at least %dx%d is needed",
+                      w, h, sc, lw, lh, MIN_W, MIN_H);
+        return -1;
+    }
+    u32 *px = malloc((size_t)lw * lh * 4), *line = malloc((size_t)w * 4);
+    int old_w = fb_screen.w, old_h = fb_screen.h;
+    int r = px && line ? fb_init(w, h) : -3;
+    if (r != 0) {
+        free(px);
+        free(line);
+        if (err) {
+            if (r == -2)
+                sb_printf(err, "%dx%d needs %zu MiB of video memory; the display adapter has %zu MiB "
+                          "(start QEMU with -vga none -device VGA,vgamem_mb=64)",
+                          w, h, ((size_t)w * h * 4 + (1 << 20) - 1) >> 20, fb_vram() >> 20);
+            else if (r == -3) sb_puts(err, "out of memory");
+            else sb_printf(err, "the display adapter does not support %dx%d", w, h);
+        }
+        if (active && old_w) fb_init(old_w, old_h); /* stay on the previous mode */
+        return -1;
+    }
+    free(shadow.px);
+    free(line_buf);
+    surface_init(&shadow, px, lw, lh);
+    line_buf = line;
+    scale = sc;
+    return 0;
+}
+
+int wm_set_display(int w, int h, int sc, strbuf *err) {
+    if (!active) {
+        sb_puts(err, "only available in graphical mode");
+        return -1;
+    }
+    if (set_mode(w, h, sc, err) != 0) return -1;
+    for (int i = 0; i < nwin; i++) move_window(zorder[i], zorder[i]->x, zorder[i]->y);
+    if (mouse_x >= shadow.w) mouse_x = shadow.w - 1;
+    if (mouse_y >= shadow.h) mouse_y = shadow.h - 1;
+    drag = NULL;
+    dx0 = dy0 = dx1 = dy1 = 0;
+    damage(0, 0, shadow.w, shadow.h);
+    return 0;
+}
+
+int wm_init(int w, int h, int sc) {
+    if (set_mode(w, h, sc, NULL) != 0) return -1;
+    mouse_x = shadow.w / 2;
+    mouse_y = shadow.h / 2;
     mouse_init();
     active = 1;
-    damage(0, 0, W, H);
+    damage(0, 0, shadow.w, shadow.h);
     return 0;
 }

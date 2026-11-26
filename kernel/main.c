@@ -1,4 +1,6 @@
 /* Kernel entry point. */
+#include <stdlib.h>
+#include <string.h>
 #include "tomos.h"
 
 void kmain(u32 mb_info, u32 magic) {
@@ -14,8 +16,25 @@ void kmain(u32 mb_info, u32 magic) {
     /* Graphical mode unless gui=0 was passed or no suitable display exists. */
     char v[8];
     int want_gui = !(cmdline_get("gui", v, sizeof v) && v[0] == '0');
-    if (want_gui && wm_init() == 0) {
-        tty *shell = tty_create(80, 30);
+    int w = 1024, h = 768, sc = 0;
+    char res[24];
+    if (cmdline_get("res", res, sizeof res) && strchr(res, 'x')) {
+        w = atoi(res);
+        h = atoi(strchr(res, 'x') + 1);
+    }
+    if (cmdline_get("scale", v, sizeof v)) sc = atoi(v);
+    int gui = want_gui && wm_init(w, h, sc) == 0;
+    if (want_gui && !gui && (w != 1024 || h != 768 || sc)) {
+        kprintf("[display] %dx%d is not possible (at least 800x600 per scale step), using 1024x768\n",
+                w, h);
+        gui = wm_init(1024, 768, 1) == 0;
+    }
+    if (gui) {
+        /* The shell window grows with the screen: 80x30 at 1024x768. */
+        int cols = 80 + (wm_screen_w() - 1024) / 16, rows = 30 + (wm_screen_h() - 768) / 32;
+        cols = cols < 80 ? 80 : cols > 132 ? 132 : cols;
+        rows = rows < 30 ? 30 : rows > 48 ? 48 : rows;
+        tty *shell = tty_create(cols, rows);
         if (shell) {
             shell->serial = 1;
             /* the shell moves from the VGA text screen into a window */

@@ -27,7 +27,7 @@ class VM:
         mon = ["-monitor", "unix:%s,server,nowait" % monitor] if monitor else ["-monitor", "none"]
         self.proc = subprocess.Popen(
             [os.environ.get("QEMU", "qemu-system-x86_64"), "-m", "256M", "-no-reboot",
-             "-display", "none", "-serial", "stdio",
+             "-display", "none", "-serial", "stdio", "-vga", "none", "-device", "VGA,vgamem_mb=64",
              "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + mon + boot,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.gui = gui

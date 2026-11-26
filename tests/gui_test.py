@@ -73,6 +73,8 @@ class Screen:
             self.data = f.read()
 
     def pixel(self, x, y):
+        if x >= self.w or y >= self.h:
+            return -1  # e.g. still in text mode, or the mode is about to change
         i = (y * self.w + x) * 3
         return (self.data[i] << 16) | (self.data[i + 1] << 8) | self.data[i + 2]
 
@@ -203,6 +205,24 @@ def main():
             time.sleep(0.5)
             vm.command("/ps", "(no apps are running)", PROMPT)
         step("the agent builds an app and launches it in a window", agent_launch)
+
+        def display():
+            vm.command("/display 1920x1080", "display: 1920x1080, scale 1", PROMPT)
+            scr.wait_pixel(1900, 1000, DESKTOP, "desktop at 1920x1080")
+            assert (scr.w, scr.h) == (1920, 1080), (scr.w, scr.h)
+            scr.wait_pixel(500, 20, TITLE_ON, "shell title bar at 1920x1080")
+            vm.command("/display 2048x1536", "display: 2048x1536, scale 2", PROMPT)
+            scr.wait_pixel(1000, 40, TITLE_ON, "shell title bar drawn twice as big")
+            assert (scr.w, scr.h) == (2048, 1536), (scr.w, scr.h)
+            scr.wait_pixel(1001, 41, TITLE_ON, "2x2 block")
+            vm.command("/display 1000x500", "[error]", "at least 800x600", PROMPT)
+            vm.command("/display 8000x8000", "[error]", "video memory", PROMPT)
+            scr.grab()
+            assert (scr.w, scr.h) == (2048, 1536), "a failed change must keep the old mode"
+            vm.command("/display 1024x768", "display: 1024x768, scale 1", PROMPT)
+            scr.wait_pixel(500, 20, TITLE_ON, "back to 1024x768")
+            vm.command("/info", "graphical (windows), 1024x768, scale 1", PROMPT)
+        step("/display changes the screen size and scale", display)
 
         def halt():
             vm.send("/halt\n")

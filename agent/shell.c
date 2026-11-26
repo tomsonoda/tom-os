@@ -12,6 +12,7 @@ static void cmd_help(void) {
         "  /apps          list files (apps are saved as apps/<name>.lua)\n"
         "  /run <name>    start an app (Ctrl-C stops it)\n"
         "  /ps, /kill <id>  list and stop running apps (graphical mode)\n"
+        "  /display <w>x<h> [scale]  change the screen size (graphical mode)\n"
         "  /cat <path>    show a file\n"
         "  /rm <path>     delete a file\n"
         "  /lua <code>    run one line of Lua\n"
@@ -35,7 +36,11 @@ static void cmd_info(void) {
     } else {
         kprintf("network: no device\n");
     }
-    kprintf("display: %s\n", wm_active() ? "graphical (windows)" : "text");
+    if (wm_active())
+        kprintf("display: graphical (windows), %dx%d, scale %d\n", wm_display_w(), wm_display_h(),
+                wm_scale());
+    else
+        kprintf("display: text\n");
     kprintf("llm    : http://%s%s  model=%s\n", agent_setting("llm"), agent_setting("path"),
             agent_setting("model"));
 }
@@ -80,6 +85,30 @@ static void command(char *line) {
         else if (r < 0) kprintf("[error] %s\n", sb_cstr(&err));
         else if (r == 1) kprintf("%s is running in its own window\n", arg);
         sb_free(&err);
+    } else if (!strcmp(line, "/display")) {
+        int w = 0, h = 0, sc = 0;
+        char *x = strchr(arg, 'x');
+        if (x) {
+            w = atoi(arg);
+            h = atoi(x + 1);
+            char *sp = strchr(x, ' ');
+            if (sp) sc = atoi(sp + 1);
+        }
+        if (!wm_active()) {
+            console_puts("/display only works in graphical mode\n");
+        } else if (!w || !h) {
+            kprintf("display: %dx%d, scale %d\n", wm_display_w(), wm_display_h(), wm_scale());
+            console_puts("usage: /display <width>x<height> [scale]\n"
+                         "  e.g. /display 1920x1080      more room\n"
+                         "       /display 2048x1536 2    the same layout, twice as big\n"
+                         "       /display 1024x768       the default\n");
+        } else {
+            strbuf err;
+            sb_init(&err);
+            if (wm_set_display(w, h, sc, &err) != 0) kprintf("[error] %s\n", sb_cstr(&err));
+            else kprintf("display: %dx%d, scale %d\n", wm_display_w(), wm_display_h(), wm_scale());
+            sb_free(&err);
+        }
     } else if (!strcmp(line, "/ps")) {
         app_list();
     } else if (!strcmp(line, "/kill")) {
