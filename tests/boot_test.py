@@ -88,7 +88,7 @@ def main():
 
         step("agent writes and checks an app via tool calls", lambda: vm.command(
             "make me a greeter app",
-            "Writing the app.", "[write_file] apps/greet.lua", "[run_lua]", "ok",
+            "Writing the app. \u3042", "[write_file] apps/greet.lua", "[run_lua]", "ok",
             "Done. Run it with /run greet", PROMPT))
 
         step("the generated app is listed", lambda: vm.command(
