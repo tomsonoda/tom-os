@@ -134,6 +134,16 @@ def main():
             vm.command("q", "bye", "launch result: the app ran and exited normally", PROMPT)
         step("the agent launches the app for the user", launch)
 
+        def slow():
+            vm.command("slow", "thinking... 2 s", "slow reply", PROMPT, timeout=20)
+            vm.send("slow\n")
+            vm.expect("thinking... 1 s")
+            vm.send("\x03")
+            vm.expect("interrupted")
+            vm.expect(PROMPT)
+            vm.command("hello again", "echo: hello again", PROMPT)
+        step("slow replies show elapsed time; Ctrl-C cancels and the next request works", slow)
+
         step("large response (many TCP segments)", lambda: vm.command(
             "big", "line 03999 of the big reply", "END-OF-BIG", PROMPT, timeout=60))
 

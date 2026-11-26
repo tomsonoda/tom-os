@@ -201,6 +201,8 @@ void tcp_input(u32 src, const u8 *seg, size_t len); /* net/tcp.c */
 #define NET_ERESET (-4)
 #define NET_ENONET (-5)
 #define NET_EPROTO (-6)
+/* Called about once per second while a TCP call is waiting (progress display). */
+extern void (*net_wait_hook)(void);
 int tcp_connect(u32 ip, u16 port, int timeout_ms);
 int tcp_send(const void *data, size_t len);
 /* >0 bytes, 0 on EOF, <0 on error. */

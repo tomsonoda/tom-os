@@ -46,6 +46,11 @@ def reply_for(req):
     user_text = msgs[last_user]["content"]
     tool_results = [m for m in msgs[last_user + 1:] if m["role"] == "tool"]
 
+    if user_text == "slow":
+        import time
+        time.sleep(4)
+        return {"role": "assistant", "content": "slow reply"}, False
+
     if user_text == "big":
         return {"role": "assistant", "content": BIG_TEXT}, False
 
@@ -90,6 +95,12 @@ class Handler(BaseHTTPRequestHandler):
             status, chunked = 400, False
             payload = {"error": {"message": "mock: %s: %s" % (type(e).__name__, e)}}
 
+        try:
+            self._reply(status, payload, chunked)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client gave up (for example Ctrl-C in tom-os)
+
+    def _reply(self, status, payload, chunked):
         data = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")

@@ -379,6 +379,15 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
 }
 
 /* ------------------------------------------------------------------ turn */
+/* Status line while waiting for the model; writing a whole app can take a
+ * minute or two, so show that time is passing. */
+static u64 wait_start;
+
+static void show_waiting(void) {
+    kprintf("\r\x1b[2m(thinking... %llu s, Ctrl-C to cancel)\x1b[0m\x1b[K",
+            (time_ms() - wait_start) / 1000);
+}
+
 void agent_turn(const char *user_text) {
     int mark = nmsgs;
     if (!net_up()) {
@@ -390,11 +399,14 @@ void agent_turn(const char *user_text) {
     console_clear_break();
 
     for (int step = 0; step < MAX_STEPS; step++) {
-        kprintf("\x1b[2m(thinking... Ctrl-C to cancel)\x1b[0m\r");
+        wait_start = time_ms();
+        show_waiting();
+        net_wait_hook = show_waiting;
         strbuf errmsg;
         sb_init(&errmsg);
         int r = llm_call(&errmsg);
-        kprintf("\x1b[2K\r");
+        net_wait_hook = NULL;
+        kprintf("\r\x1b[2K");
         if (r != 0) kprintf("[error] %s\n", sb_cstr(&errmsg));
         sb_free(&errmsg);
         if (r != 0) {

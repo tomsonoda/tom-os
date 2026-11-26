@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 import threading
+import time
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -141,7 +142,11 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *a):
-        sys.stderr.write("[gateway] " + fmt % a + "\n")
+        pass  # replaced by the messages in do_POST
+
+    def note(self, text):
+        sys.stderr.write("[gateway %s] %s\n" % (time.strftime("%H:%M:%S"), text))
+        sys.stderr.flush()
 
     def _send(self, status, payload):
         data = json.dumps(payload).encode()
@@ -158,16 +163,31 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         except ValueError:
             return self._send(400, {"error": {"message": "request body is not valid JSON"}})
+        msgs = req.get("messages", [])
+        last = next((m.get("content") or "" for m in reversed(msgs) if m.get("role") in ("user", "tool")), "")
+        self.note("request from %s: %d messages, last: %r - waiting for %s"
+                  % (self.client_address[0], len(msgs), last[:60], args.model))
+        start = time.time()
         try:
-            self._send(200, complete(req))
+            reply = complete(req)
+            msg = reply["choices"][0]["message"]
+            calls = [c["function"]["name"] for c in msg.get("tool_calls", [])]
+            self.note("reply after %.0f s: %s" % (time.time() - start,
+                      "tool calls " + ", ".join(calls) if calls else "%d characters of text" % len(msg["content"] or "")))
+            self._send(200, reply)
+        except (BrokenPipeError, ConnectionResetError):
+            self.note("tom-os stopped waiting (Ctrl-C?) after %.0f s; reply dropped" % (time.time() - start))
         except anthropic.AuthenticationError:
+            self.note("no valid Anthropic credential")
             self._send(401, {"error": {"message": "the gateway has no valid Anthropic credential "
                                                   "(set ANTHROPIC_API_KEY or run `ant auth login`)"}})
         except anthropic.RateLimitError:
             self._send(429, {"error": {"message": "rate limited by the Claude API; try again shortly"}})
         except anthropic.APIStatusError as e:
+            self.note("Claude API error %d: %s" % (e.status_code, e.message))
             self._send(e.status_code, {"error": {"message": "Claude API error: %s" % e.message}})
         except anthropic.APIConnectionError as e:
+            self.note("could not reach the Claude API: %s" % e)
             self._send(502, {"error": {"message": "gateway could not reach the Claude API: %s" % e}})
 
 
@@ -183,6 +203,7 @@ def main():
     client = anthropic.Anthropic()
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     print("Claude gateway on http://%s:%d  model=%s effort=%s" % (args.bind, args.port, args.model, args.effort))
+    print("Waiting for tom-os. Writing a whole app can take a minute or two per reply.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

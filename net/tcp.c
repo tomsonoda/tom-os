@@ -15,6 +15,15 @@
 
 enum { CLOSED, SYN_SENT, ESTABLISHED };
 
+void (*net_wait_hook)(void);
+
+static void wait_tick(void) {
+    static u64 last;
+    if (!net_wait_hook || time_ms() - last < 1000) return;
+    last = time_ms();
+    net_wait_hook();
+}
+
 static struct {
     int state;
     u32 rip;
@@ -234,6 +243,7 @@ int tcp_send(const void *data, size_t len) {
             continue;
         }
         if (console_break_pending()) return NET_EBREAK;
+        wait_tick();
         cpu_idle();
     }
     return 0;
@@ -258,6 +268,7 @@ int tcp_recv(void *buf, size_t max, int timeout_ms) {
         if (T.state != ESTABLISHED) return T.reset ? NET_ERESET : NET_EPROTO;
         if (console_break_pending()) return NET_EBREAK;
         if (time_ms() - start > (u64)timeout_ms) return NET_ETIMEOUT;
+        wait_tick();
         cpu_idle();
     }
 }

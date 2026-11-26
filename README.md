@@ -75,6 +75,8 @@ make run          # or: text mode in this terminal
 
 The default model is `claude-opus-5-5`. Change it with `--model` and `--effort`.
 
+The gateway prints a line when a request arrives and another when Claude's reply comes back. Writing a whole app can take a minute or two per reply; tom-os shows the seconds that have passed (`thinking... 42 s`). Pressing `Ctrl-C` cancels the request.
+
 ### With a local LLM on the host
 
 Servers that speak the chat completions format (with tool calls) over plain HTTP, such as llama.cpp's `llama-server` or Ollama, can be used directly.
