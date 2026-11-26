@@ -37,6 +37,8 @@ static int dechunk(const char *p, size_t n, strbuf *out) {
     }
 }
 
+const char *http_phase = "connecting";
+
 int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t body_len,
                    strbuf *resp, int *status, int timeout_ms) {
     char head[512], host[16];
@@ -44,6 +46,7 @@ int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t 
     int r;
 
     net_fmt_ip(ip, host);
+    http_phase = "connecting";
     r = tcp_connect(ip, port, 5000);
     if (r < 0) return r;
 
@@ -56,6 +59,7 @@ int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t 
                       "Content-Length: %zu\r\n"
                       "Connection: close\r\n\r\n",
                       path, host, port, body_len);
+    http_phase = "sending the request";
     if ((r = tcp_send(head, (size_t)hn)) < 0 || (r = tcp_send(body, body_len)) < 0) {
         tcp_close();
         return r;
@@ -66,6 +70,7 @@ int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t 
     long content_len = -1;
     int chunked = 0, done = 0;
     static char buf[8192];
+    http_phase = "waiting for the reply";
     while (!done) {
         int n = tcp_recv(buf, sizeof buf, timeout_ms);
         if (n < 0) {
@@ -85,6 +90,9 @@ int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t 
             if ((v = find_header(raw.p, hdr_len, "transfer-encoding")))
                 chunked = strncasecmp(v, "chunked", 7) == 0;
         }
+        /* Servers may send whitespace while they wait (keep-alive); the reply
+         * proper starts with the JSON object. */
+        if (memchr(raw.p + hdr_len, '{', raw.len - hdr_len)) http_phase = "receiving the reply";
         if (chunked) done = dechunk(raw.p + hdr_len, raw.len - hdr_len, resp);
         else if (content_len >= 0) done = raw.len - hdr_len >= (size_t)content_len;
     }

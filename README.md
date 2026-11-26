@@ -50,7 +50,7 @@ make test-iso # runs the same test booting from the ISO
 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
-`make test` does not use a real LLM. `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` covers graphical mode: it sends key presses and mouse movement through QEMU and checks pixels in screenshots (windows, focus switching, dragging, a graphics app reacting to held keys).
+`make test` does not use a real LLM. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` covers graphical mode: it sends key presses and mouse movement through QEMU and checks pixels in screenshots (windows, focus switching, dragging, a graphics app reacting to held keys).
 
 ## Running
 
@@ -75,7 +75,9 @@ make run          # or: text mode in this terminal
 
 The default model is `claude-opus-5-5`. Change it with `--model` and `--effort`.
 
-The gateway prints a line when a request arrives and another when Claude's reply comes back. Writing a whole app can take a minute or two per reply; tom-os shows the seconds that have passed (`thinking... 42 s`). Pressing `Ctrl-C` cancels the request.
+The gateway prints a line when a request arrives, a progress line every 15 seconds while Claude is writing, and a line when the reply is sent. Writing a whole app can take a minute or two per reply; tom-os shows the seconds that have passed (`thinking... 42 s`). Pressing `Ctrl-C` cancels the request.
+
+The gateway streams Claude's reply and sends tom-os a space every few seconds while it waits, so a long reply never looks like a dead connection. If something fails, tom-os says at which step (connecting, sending the request, waiting for the reply) and the gateway prints the error from the Claude API.
 
 ### With a local LLM on the host
 

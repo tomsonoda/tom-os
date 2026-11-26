@@ -16,6 +16,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y nasm qemu-system-x86 grub-pc-bin grub-common xorriso mtools
+          pip install anthropic
       - name: Build kernel
         run: make
       - name: Test (direct kernel boot)

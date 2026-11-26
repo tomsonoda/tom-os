@@ -104,6 +104,7 @@ run-vga: $(KERNEL)
 test: $(KERNEL)
 	python3 tests/boot_test.py
 	python3 tests/gui_test.py
+	python3 tests/gateway_test.py
 
 # Bootable CD image (BIOS boot via GRUB). Needs grub-pc-bin, xorriso and mtools.
 iso: $(ISO)

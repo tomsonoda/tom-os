@@ -120,8 +120,12 @@ def from_claude(response):
                          "finish_reason": "tool_calls" if calls else "stop"}]}
 
 
-def complete(req):
+def complete(req, progress):
+    """Asks Claude, streaming so long replies neither time out nor go silent.
+    progress(chars) is called as text and tool arguments arrive."""
     system, messages, tools = to_claude(req)
+    for t in tools:
+        t["eager_input_streaming"] = True  # stream large tool arguments (whole apps) as written
     params = dict(
         model=args.model,
         max_tokens=MAX_TOKENS,
@@ -135,7 +139,21 @@ def complete(req):
     )
     if tools:
         params["tools"] = tools
-    return from_claude(client.beta.messages.create(**params))
+    chars = 0
+    with client.beta.messages.stream(**params) as stream:
+        for event in stream:
+            if event.type == "text":
+                chars += len(event.text)
+            elif event.type == "input_json":
+                chars += len(event.partial_json)
+            else:
+                continue
+            progress(chars)
+        return from_claude(stream.get_final_message())
+
+
+def error(message):
+    return {"error": {"message": message}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -148,47 +166,94 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[gateway %s] %s\n" % (time.strftime("%H:%M:%S"), text))
         sys.stderr.flush()
 
-    def _send(self, status, payload):
-        data = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(data)
-        self.close_connection = True
+    def _chunk(self, data):
+        self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+        self.wfile.flush()
 
     def do_POST(self):
         try:
             req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
         except ValueError:
-            return self._send(400, {"error": {"message": "request body is not valid JSON"}})
-        msgs = req.get("messages", [])
+            req = None
+        msgs = (req or {}).get("messages", [])
         last = next((m.get("content") or "" for m in reversed(msgs) if m.get("role") in ("user", "tool")), "")
-        self.note("request from %s: %d messages, last: %r - waiting for %s"
+        self.note("request from %s: %d messages, last: %r - asking %s"
                   % (self.client_address[0], len(msgs), last[:60], args.model))
+
+        # Answer at once and send a space every few seconds until Claude is
+        # done (JSON allows leading whitespace), so tom-os knows the gateway is
+        # alive and the connection never sits idle for minutes.
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
         start = time.time()
+        lock = threading.Lock()
+        stop = threading.Event()
+        state = {"chars": 0, "gone": False, "last_note": start}
+
+        def keepalive():
+            while not stop.wait(5):
+                with lock:
+                    if state["gone"]:
+                        return
+                    try:
+                        self._chunk(b" ")
+                    except OSError:
+                        state["gone"] = True
+                        return
+                now = time.time()
+                if now - state["last_note"] >= 15:
+                    state["last_note"] = now
+                    self.note("still waiting for Claude: %.0f s, %d characters so far"
+                              % (now - start, state["chars"]))
+
+        def progress(chars):
+            state["chars"] = chars
+            if state["gone"]:
+                raise ConnectionAbortedError
+
+        ka = threading.Thread(target=keepalive, daemon=True)
+        ka.start()
         try:
-            reply = complete(req)
-            msg = reply["choices"][0]["message"]
-            calls = [c["function"]["name"] for c in msg.get("tool_calls", [])]
-            self.note("reply after %.0f s: %s" % (time.time() - start,
-                      "tool calls " + ", ".join(calls) if calls else "%d characters of text" % len(msg["content"] or "")))
-            self._send(200, reply)
-        except (BrokenPipeError, ConnectionResetError):
-            self.note("tom-os stopped waiting (Ctrl-C?) after %.0f s; reply dropped" % (time.time() - start))
+            if req is None:
+                payload = error("request body is not valid JSON")
+            else:
+                payload = complete(req, progress)
+                msg = payload["choices"][0]["message"]
+                calls = [c["function"]["name"] for c in msg.get("tool_calls", [])]
+                self.note("reply after %.0f s: %s" % (time.time() - start,
+                          "tool calls " + ", ".join(calls) if calls
+                          else "%d characters of text" % len(msg["content"] or "")))
+        except ConnectionAbortedError:
+            payload = None
         except anthropic.AuthenticationError:
-            self.note("no valid Anthropic credential")
-            self._send(401, {"error": {"message": "the gateway has no valid Anthropic credential "
-                                                  "(set ANTHROPIC_API_KEY or run `ant auth login`)"}})
+            payload = error("the gateway has no valid Anthropic credential "
+                            "(set ANTHROPIC_API_KEY or run `ant auth login`)")
         except anthropic.RateLimitError:
-            self._send(429, {"error": {"message": "rate limited by the Claude API; try again shortly"}})
+            payload = error("rate limited by the Claude API; try again shortly")
         except anthropic.APIStatusError as e:
-            self.note("Claude API error %d: %s" % (e.status_code, e.message))
-            self._send(e.status_code, {"error": {"message": "Claude API error: %s" % e.message}})
+            payload = error("Claude API error %d: %s" % (e.status_code, e.message))
         except anthropic.APIConnectionError as e:
-            self.note("could not reach the Claude API: %s" % e)
-            self._send(502, {"error": {"message": "gateway could not reach the Claude API: %s" % e}})
+            payload = error("the gateway could not reach the Claude API: %s" % e)
+        except ValueError:  # unparseable streamed tool arguments
+            payload = error("Claude's reply could not be read; please try again")
+        finally:
+            stop.set()
+            ka.join()
+        if payload and "error" in payload:
+            self.note(payload["error"]["message"])
+        if state["gone"] or payload is None:
+            self.note("tom-os stopped waiting (Ctrl-C?) after %.0f s; reply dropped" % (time.time() - start))
+            return
+        try:
+            self._chunk(json.dumps(payload).encode())
+            self._chunk(b"")
+        except OSError:
+            self.note("tom-os closed the connection before the reply was sent")
 
 
 def main():
@@ -200,7 +265,9 @@ def main():
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
     args = ap.parse_args()
-    client = anthropic.Anthropic()
+    # Streaming replies: the timeout applies between pieces of the reply, not
+    # to the whole reply, so a stalled request fails instead of hanging.
+    client = anthropic.Anthropic(timeout=120.0, max_retries=2)
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     print("Claude gateway on http://%s:%d  model=%s effort=%s" % (args.bind, args.port, args.model, args.effort))
     print("Waiting for tom-os. Writing a whole app can take a minute or two per reply.", flush=True)

@@ -261,7 +261,10 @@ static int llm_call(strbuf *errmsg) {
     int r = http_post_json(ip, port, path, sb_cstr(&req), req.len, &resp, &status, 600000);
     sb_free(&req);
     if (r < 0) {
-        sb_printf(errmsg, "LLM request to %s:%u failed: %s", endpoint, port, net_strerror(r));
+        sb_printf(errmsg, "LLM request to %s:%u failed while %s: %s", endpoint, port, http_phase,
+                  net_strerror(r));
+        if (r == NET_ETIMEOUT && !strcmp(http_phase, "connecting"))
+            sb_puts(errmsg, " (is the LLM server running? check /info and /set llm)");
         sb_free(&resp);
         return -1;
     }
@@ -272,8 +275,10 @@ static int llm_call(strbuf *errmsg) {
     if (status != 200 || !m) {
         const char *detail = json_str(json_get(err, "message"));
         if (!detail) detail = json_str(err);
-        sb_printf(errmsg, "LLM returned HTTP %d: %.300s", status,
-                  detail ? detail : resp.len ? resp.p : "(empty response)");
+        if (status == 200 && detail) sb_printf(errmsg, "LLM error: %.300s", detail);
+        else
+            sb_printf(errmsg, "LLM returned HTTP %d: %.300s", status,
+                      detail ? detail : resp.len ? resp.p : "(empty response)");
         json_free(root);
         sb_free(&resp);
         return -1;
@@ -384,7 +389,10 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
 static u64 wait_start;
 
 static void show_waiting(void) {
-    kprintf("\r\x1b[2m(thinking... %llu s, Ctrl-C to cancel)\x1b[0m\x1b[K",
+    const char *what = !strcmp(http_phase, "waiting for the reply") ? "thinking"
+                     : !strcmp(http_phase, "receiving the reply") ? "thinking, reply started"
+                     : http_phase;
+    kprintf("\r\x1b[2m(%s... %llu s, Ctrl-C to cancel)\x1b[0m\x1b[K", what,
             (time_ms() - wait_start) / 1000);
 }
 

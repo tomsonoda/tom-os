@@ -210,7 +210,11 @@ int tcp_recv(void *buf, size_t max, int timeout_ms);
 void tcp_close(void);
 const char *net_strerror(int e);
 
-/* net/http.c: POST a JSON body, collect the decoded response body. */
+/* net/http.c: POST a JSON body, collect the decoded response body.
+ * http_phase says what the current (or last) request is doing, for messages:
+ * "connecting", "sending the request", "waiting for the reply",
+ * "receiving the reply". */
+extern const char *http_phase;
 int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t body_len,
                    strbuf *resp, int *status, int timeout_ms);
 
