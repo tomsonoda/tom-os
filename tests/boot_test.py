@@ -16,12 +16,18 @@ PROMPT = "tom-os>"
 
 class VM:
     def __init__(self, port):
+        # TOMOS_ISO=<path> boots the CD image through GRUB instead of loading
+        # the kernel directly; the LLM address is then set with /set.
+        self.iso = os.environ.get("TOMOS_ISO")
+        if self.iso:
+            boot = ["-cdrom", os.path.join(ROOT, self.iso), "-boot", "d"]
+        else:
+            boot = ["-kernel", os.path.join(ROOT, "build", "tomos.elf"),
+                    "-append", "llm=10.0.2.2:%d model=mock" % port]
         self.proc = subprocess.Popen(
             [os.environ.get("QEMU", "qemu-system-x86_64"), "-m", "256M", "-no-reboot",
              "-display", "none", "-serial", "stdio", "-monitor", "none",
-             "-kernel", os.path.join(ROOT, "build", "tomos.elf"),
-             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0",
-             "-append", "llm=10.0.2.2:%d model=mock" % port],
+             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + boot,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.raw = b""  # decoded as a whole: multi-byte characters arrive split
         self.pos = 0
@@ -75,7 +81,13 @@ def main():
         print("ok %2d - %s" % (steps, name))
 
     try:
-        step("boots to a prompt", lambda: (vm.expect("network up"), vm.expect(PROMPT)))
+        step("boots to a prompt" + (" from the ISO" if vm.iso else ""),
+             lambda: (vm.expect("network up", 60), vm.expect(PROMPT)))
+
+        step("/set changes the LLM server and model", lambda: (
+            vm.command("/set llm 10.0.2.2:%d" % port, "llm = 10.0.2.2:%d" % port, PROMPT),
+            vm.command("/set model mock", "model = mock", PROMPT),
+            vm.command("/info", "http://10.0.2.2:%d/v1/chat/completions  model=mock" % port, PROMPT)))
 
         step("Lua arithmetic and number formatting", lambda: vm.command(
             "/lua print(6*7, 0.1+0.2, 2^10, 10//3, string.format('%.3f %5d %g', math.pi, 42, 1e21))",

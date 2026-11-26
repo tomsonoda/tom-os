@@ -29,6 +29,8 @@ QEMU_FLAGS := -m $(MEM) -no-reboot -kernel $(KERNEL) \
               -netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
               -append "llm=$(LLM) model=$(MODEL)"
 
+ISO := $(BUILD)/tomos.iso
+
 all: $(KERNEL)
 
 $(KERNEL): $(OBJS) linker.ld
@@ -59,7 +61,25 @@ run-vga: $(KERNEL)
 test: $(KERNEL)
 	python3 tests/boot_test.py
 
+# Bootable CD image (BIOS boot via GRUB). Needs grub-pc-bin, xorriso and mtools.
+iso: $(ISO)
+
+$(ISO): $(KERNEL) iso/grub.cfg
+	rm -rf $(BUILD)/isoroot
+	mkdir -p $(BUILD)/isoroot/boot/grub
+	cp $(KERNEL) $(BUILD)/isoroot/boot/tomos.elf
+	sed 's|@MODEL@|$(MODEL)|g' iso/grub.cfg > $(BUILD)/isoroot/boot/grub/grub.cfg
+	grub-mkrescue -o $@ $(BUILD)/isoroot 2> $(BUILD)/grub-mkrescue.log || (cat $(BUILD)/grub-mkrescue.log; false)
+	@ls -l $@ | awk '{printf "built %s (%.1f MiB)\n", $$NF, $$5 / 1048576}'
+
+run-iso: $(ISO)
+	$(QEMU) -m $(MEM) -no-reboot -cdrom $(ISO) -boot d \
+	    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
+
+test-iso: $(ISO)
+	TOMOS_ISO=$(ISO) python3 tests/boot_test.py
+
 clean:
 	rm -rf $(BUILD)
 
-.PHONY: all run run-vga test clean
+.PHONY: all run run-vga test iso run-iso test-iso clean

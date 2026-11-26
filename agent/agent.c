@@ -121,6 +121,45 @@ static void msgs_truncate(int n) {
 
 void agent_reset(void) { msgs_truncate(0); }
 
+/* -------------------------------------------------------------- settings */
+/* LLM connection settings: defaults, overridden by kernel arguments at boot
+ * and by the /set command at run time. */
+static struct {
+    const char *key;
+    char value[128];
+} settings[] = {
+    {"llm", "10.0.2.2:8080"},
+    {"model", "default"},
+    {"path", "/v1/chat/completions"},
+};
+#define NSETTINGS (sizeof settings / sizeof *settings)
+
+static void settings_load(void) {
+    static int loaded;
+    if (loaded) return;
+    loaded = 1;
+    for (size_t i = 0; i < NSETTINGS; i++)
+        cmdline_get(settings[i].key, settings[i].value, sizeof settings[i].value);
+}
+
+const char *agent_setting(const char *key) {
+    settings_load();
+    for (size_t i = 0; i < NSETTINGS; i++)
+        if (strcmp(settings[i].key, key) == 0) return settings[i].value;
+    return "";
+}
+
+int agent_set(const char *key, const char *value) {
+    settings_load();
+    for (size_t i = 0; i < NSETTINGS; i++) {
+        if (strcmp(settings[i].key, key) != 0) continue;
+        if (!*value || strlen(value) >= sizeof settings[i].value) return -1;
+        strcpy(settings[i].value, value);
+        return 0;
+    }
+    return -1;
+}
+
 /* ------------------------------------------------------------------- LLM */
 static void put_field(strbuf *b, const char *key, const char *val) {
     json_quote(b, key, strlen(key));
@@ -171,10 +210,9 @@ static void build_request(strbuf *b, const char *model) {
 /* Calls the model with the current conversation and appends its reply.
  * Returns 0 on success; on failure describes the reason in `errmsg`. */
 static int llm_call(strbuf *errmsg) {
-    char endpoint[64] = "10.0.2.2:8080", model[96] = "default", path[128] = "/v1/chat/completions";
-    cmdline_get("llm", endpoint, sizeof endpoint);
-    cmdline_get("model", model, sizeof model);
-    cmdline_get("path", path, sizeof path);
+    char endpoint[64];
+    const char *model = agent_setting("model"), *path = agent_setting("path");
+    snprintf(endpoint, sizeof endpoint, "%s", agent_setting("llm"));
 
     u32 ip;
     u16 port = 80;

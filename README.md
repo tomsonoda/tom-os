@@ -25,6 +25,7 @@ Linuxなどの既存カーネルは使っていません。ブート、コンソ
 | QEMUで起動してエージェントと対話 | Android端末 / aarch64 |
 | LLMがLuaアプリを生成・検証・起動 | OS内でのローカル推論（今はHTTP越しにLLMを呼ぶ） |
 | シリアルとVGAテキストのコンソール | グラフィックUI、日本語のVGA表示 |
+| ISOからの起動（BIOS） | UEFI起動、ディスクへのインストール |
 | メモリ上のファイルシステム | 再起動後も残るストレージ |
 | 平文HTTPでのLLM接続 | TLS、DHCP、DNS |
 
@@ -39,7 +40,11 @@ Linuxなどの既存カーネルは使っていません。ブート、コンソ
 ```sh
 make          # build/tomos.elf を作る
 make test     # QEMUで起動し、モックのLLMを相手に一連の動作を確認する
+make iso      # build/tomos.iso を作る（GRUBでBIOS起動するCDイメージ）
+make test-iso # 同じテストをISOからの起動で行う
 ```
+
+ISOを作るには追加で `grub-pc-bin`、`xorriso`、`mtools` が必要です。ビルド済みのISOは、GitHubの Actions の実行結果（成果物 `tomos-iso`）からダウンロードできます。
 
 `make test` は実際のLLMを使いません。`tools/mock_llm.py` が決め打ちの応答（ツール呼び出しを含む）を返し、起動 → HTTP → アプリ生成 → アプリの対話実行 → 電源断までを確認します。
 
@@ -96,7 +101,57 @@ make run MODEL=<モデル名>
 | `/lua <コード>` | Luaを1行実行 |
 | `/clear` | 会話履歴を消す |
 | `/info` | メモリ・ネットワーク・LLM設定 |
+| `/set llm <IP:port>` `/set model <名前>` `/set path <パス>` | LLMの接続先とモデルを起動後に変える |
 | `/halt` `/reboot` | 電源断・再起動 |
+
+## Mac（macOS）で試す
+
+x86-64 をエミュレーションするので、Apple Silicon でも Intel でも動きます。ISOは上記のとおり Actions からダウンロードできます（Mac上でのビルドは未対応）。
+
+この節の手順は Linux 上の QEMU での確認に基づいています。macOS の QEMU と UTM では未確認です。
+
+### QEMU（Homebrew）
+
+```sh
+brew install qemu
+qemu-system-x86_64 -m 256M -cdrom tomos.iso -boot d \
+  -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
+```
+
+QEMUのウィンドウ（VGA画面）とこのターミナル（シリアル）の両方がコンソールになります。日本語を使うときはターミナル側から入力してください。
+
+### UTM
+
+UTM は QEMU に設定画面を付けた macOS 用の仮想マシンアプリです。新規作成で「エミュレート」→「その他」を選び、次のように設定します。
+
+- アーキテクチャ: x86_64
+- 起動: UEFIブートを無効にする（BIOS起動）
+- メモリ: 256 MB 以上
+- ネットワーク: 「Emulated VLAN」、カードは virtio-net-pci（既定の「Shared Network」ではつながりません）
+- CD/DVD: `tomos.iso`
+
+### LLMをMac上で動かす
+
+VMからは Mac が `10.0.2.2` に見えます。GRUBのメニューで接続先（8080番 / Ollamaの11434番）を選べ、起動後は `/set` で変えられます。
+
+```sh
+# Ollama の場合（ツール呼び出しに対応したモデルが必要）
+ollama serve
+#   tom-os> /set llm 10.0.2.2:11434
+#   tom-os> /set model <pull済みのモデル名>
+
+# Claude の場合
+pip install anthropic && export ANTHROPIC_API_KEY=...
+python3 tools/claude_gateway.py
+```
+
+### 確認してほしい項目
+
+1. ISOから起動してプロンプトが出る
+2. キーボードで入力できる（US配列のみ対応。JIS配列では記号の位置がずれます）
+3. `/info` で network が表示される
+4. LLMと会話が1往復通る
+5. 「〇〇アプリを作って」でアプリが生成され、`/run <名前>` で使える
 
 ## 仕組み
 

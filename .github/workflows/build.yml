@@ -1,0 +1,31 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm qemu-system-x86 grub-pc-bin grub-common xorriso mtools
+      - name: Build kernel
+        run: make
+      - name: Test (direct kernel boot)
+        run: make test
+      - name: Build ISO
+        run: make iso
+      - name: Test (boot from ISO)
+        run: make test-iso
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tomos-iso
+          path: build/tomos.iso
+          if-no-files-found: error

@@ -15,14 +15,14 @@ static void cmd_help(void) {
         "  /lua <code>    run one line of Lua\n"
         "  /clear         forget the conversation\n"
         "  /info          memory, network and LLM settings\n"
+        "  /set llm <ip:port> | model <name> | path <url path>\n"
+        "                 change which LLM server and model are used\n"
         "  /reboot, /halt\n");
 }
 
 static void cmd_info(void) {
-    char ip[16], llm[64] = "10.0.2.2:8080", model[96] = "default";
+    char ip[16];
     net_fmt_ip(net_ip(), ip);
-    cmdline_get("llm", llm, sizeof llm);
-    cmdline_get("model", model, sizeof model);
     kprintf("tom-os %s\n", TOMOS_VERSION);
     kprintf("memory : %zu KiB used of %zu MiB\n", mem_used() / 1024, mem_total() >> 20);
     if (net_up()) {
@@ -33,7 +33,8 @@ static void cmd_info(void) {
     } else {
         kprintf("network: no device\n");
     }
-    kprintf("llm    : http://%s  model=%s\n", llm, model);
+    kprintf("llm    : http://%s%s  model=%s\n", agent_setting("llm"), agent_setting("path"),
+            agent_setting("model"));
 }
 
 static void cmd_apps(void) {
@@ -89,6 +90,16 @@ static void command(char *line) {
     } else if (!strcmp(line, "/clear")) {
         agent_reset();
         console_puts("conversation cleared\n");
+    } else if (!strcmp(line, "/set")) {
+        char *val = strchr(arg, ' ');
+        if (val) {
+            *val++ = 0;
+            while (*val == ' ') val++;
+        }
+        if (!val || agent_set(arg, val) != 0)
+            console_puts("usage: /set llm <ip:port> | /set model <name> | /set path <url path>\n");
+        else
+            kprintf("%s = %s\n", arg, agent_setting(arg));
     } else if (!strcmp(line, "/info")) {
         cmd_info();
     } else if (!strcmp(line, "/halt")) {

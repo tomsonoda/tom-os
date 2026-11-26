@@ -142,6 +142,8 @@ int lua_run(const char *name, const char *code, size_t len, int interactive, int
 void shell_run(void);                    /* agent/shell.c */
 void agent_reset(void);                  /* agent/agent.c */
 void agent_turn(const char *user_text);
+const char *agent_setting(const char *key);         /* "llm", "model", "path" */
+int agent_set(const char *key, const char *value);  /* 0 on success */
 int app_run(const char *name_or_path, strbuf *err); /* resolve + run interactively */
 
 int kprintf(const char *fmt, ...);
