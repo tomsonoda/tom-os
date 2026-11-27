@@ -33,11 +33,14 @@
 #define COL_TITLE_OFF 0x5A6268
 #define COL_TITLE_TEXT 0xFFFFFF
 #define COL_CLOSE 0xC8473E
-#define COL_BAR 0x141A1F
-#define COL_BAR_TEXT 0xD8E2E8
-#define COL_BAR_DIM 0x7A8A94
-#define COL_PILL 0xE8EEF2
-#define COL_OVERVIEW 0x0E2A36
+/* full-screen layout: soft, light bars matching the home screen */
+#define COL_BAR 0xF6F3EE
+#define COL_BAR_LINE 0xE4DED4
+#define COL_BAR_TEXT 0x2B2926
+#define COL_BAR_DIM 0x9A948B
+#define COL_PILL 0x3A3835
+#define COL_OVERVIEW 0xE6E0D6
+#define COL_ACCENT 0xD0794F
 #define COL_APP_BG 0x000000
 
 static const u32 palette[16] = {
@@ -180,6 +183,9 @@ static void view_rect(const window *w, int *x, int *y, int *vw, int *vh, int *k)
     *x = (shadow.w - *vw) / 2;
     *y = area_y() + (area_h() - *vh) / 2;
 }
+
+/* The home screen in full-screen layout is the chat view, not the terminal. */
+static int home_is_chat(const window *w) { return w && w == home && layout == LAYOUT_FULL && w->tty->home; }
 
 static int sliding(void) { return gesture || anim || slide_off || vanim; }
 
@@ -469,7 +475,7 @@ static void draw_app(const window *w, int sx, int sy) {
     int cy0 = shadow.cy0, cy1 = shadow.cy1;
     if (shadow.cy0 < area_y()) shadow.cy0 = area_y();
     if (shadow.cy1 > area_y() + area_h()) shadow.cy1 = area_y() + area_h();
-    gfx_fill(&shadow, sx, area_y() + sy, shadow.w, area_h(), COL_APP_BG);
+    gfx_fill(&shadow, sx, area_y() + sy, shadow.w, area_h(), home_is_chat(w) ? COL_BAR : COL_APP_BG);
     if (k == 1) gfx_blit(&shadow, vx + sx, vy + sy, w->front, w->w, w->h);
     else gfx_blit_resize(&shadow, vx + sx, vy + sy, vw, vh, w->front, w->w, w->h);
     shadow.cy0 = cy0;
@@ -481,6 +487,7 @@ static void draw_status_bar(void) {
     char buf[96];
     int napps = app_count();
     gfx_fill(&shadow, 0, 0, shadow.w, STATUS_H, COL_BAR);
+    gfx_fill(&shadow, 0, STATUS_H - 1, shadow.w, 1, COL_BAR_LINE);
     if (!f) return;
     if (overview) snprintf(buf, sizeof buf, "Running apps (%d)", napps);
     else if (f == home) snprintf(buf, sizeof buf, "tom-os");
@@ -502,12 +509,19 @@ static void draw_status_bar(void) {
 /* The input method indicator: あ when typing becomes kana, A otherwise. */
 static void draw_ime(int x, int y) {
     int on = ime_enabled();
+    if (layout == LAYOUT_FULL) {
+        gfx_round(&shadow, x, y, 24, 18, 6, on ? COL_ACCENT : COL_BAR_LINE);
+        const char *l = on ? "あ" : "A";
+        gfx_text(&shadow, x + (on ? 4 : 8), y + 1, l, strlen(l), on ? 0xFFFFFF : COL_BAR_TEXT, -1, 1);
+        return;
+    }
     gfx_fill(&shadow, x, y, 24, 18, on ? COL_TITLE_ON : COL_BAR);
     const char *label = on ? "あ" : "A";
     gfx_text(&shadow, x + (on ? 4 : 8), y + 1, label, strlen(label), COL_TITLE_TEXT, -1, 1);
 }
 
 void wm_ime_changed(void) {
+    if (home && home->tty->home) home_invalidate(home->tty->home);
     if (layout == LAYOUT_FULL) damage(0, 0, shadow.w, STATUS_H);
     else damage(0, shadow.h - CELL_H - 8, shadow.w, CELL_H + 8);
 }
@@ -518,6 +532,7 @@ static void draw_home_bar(void) {
     window *a[MAX_WINDOWS];
     int n = running_apps(a);
     gfx_fill(&shadow, 0, y, shadow.w, BAR_H, COL_BAR);
+    gfx_fill(&shadow, 0, y, shadow.w, 1, COL_BAR_LINE);
     /* one dot per running app, the current one bright */
     int dots_x = shadow.w / 2 - n * 6;
     for (int i = 0; i < n; i++)
@@ -527,7 +542,7 @@ static void draw_home_bar(void) {
     if (overview) hint = "click an app to open it - drag it up or click x to close it - Esc: back";
     else if (f != home) hint = "click or drag up: home - drag sideways: other apps";
     else if (n) hint = "click or drag up: running apps";
-    else hint = "type what you want - apps open here";
+    else hint = "";
     text_at(8, y + 6, shadow.w >= 1000 ? hint : "", COL_BAR_DIM);
 }
 
@@ -675,9 +690,23 @@ static void step_anim(void) {
     damage_all();
 }
 
+
+static void render_home(window *w) {
+    static u64 last;
+    if (!home_dirty(w->tty->home) || time_ms() - last < 30) return;
+    last = time_ms();
+    surface s;
+    surface_init(&s, w->front, w->w, w->h);
+    home_render(w->tty->home, &s);
+    damage_content(w, 0, 0, w->w, w->h);
+}
+
 void wm_tick(void) {
-    for (int i = 0; i < nwin; i++)
-        if (!zorder[i]->canvas) render_term(zorder[i]);
+    for (int i = 0; i < nwin; i++) {
+        if (zorder[i]->canvas) continue;
+        if (home_is_chat(zorder[i])) render_home(zorder[i]);
+        else render_term(zorder[i]);
+    }
     u64 now = time_ms();
     if (now - last_compose < 15) return;
     if (layout == LAYOUT_FULL) {
@@ -748,9 +777,13 @@ static void fit_home(void) {
     }
     if (cols > 200) cols = 200;
     if (rows > 64) rows = 64;
-    if (cols == t->cols && rows == t->rows && home->w == cols * CELL_W) return;
+    int want_w = layout == LAYOUT_FULL && home->tty->home ? shadow.w : cols * CELL_W;
+    int want_h = layout == LAYOUT_FULL && home->tty->home ? area_h() : rows * CELL_H;
+    if (cols == t->cols && rows == t->rows && home->w == want_w && home->h == want_h) return;
     term_resize(t, cols, rows);
-    wm_set_text(home);
+    if (want_w == cols * CELL_W && want_h == rows * CELL_H) wm_set_text(home);
+    else resize(home, want_w, want_h, 0);
+    if (home->tty->home) home_invalidate(home->tty->home);
 }
 
 void wm_set_home(window *w) {
@@ -764,6 +797,10 @@ void wm_set_layout(int l) {
     overview = gesture = anim = slide_off = vanim = 0;
     drag = NULL;
     fit_home();
+    if (home && layout == LAYOUT_WINDOWS) { /* full screen moved it to the edge */
+        home->x = 24;
+        home->y = TITLE_H + 12;
+    }
     for (int i = 0; i < nwin; i++) {
         if (!zorder[i]->canvas) zorder[i]->tty->term->dirty = ~0ULL;
         if (layout == LAYOUT_WINDOWS) move_window(zorder[i], zorder[i]->x, zorder[i]->y);
@@ -786,6 +823,10 @@ void wm_key(int code, int down, int alt, const char *chars) {
         else if (alt && code == 0x10 && app_at(ov_sel) && app_at(ov_sel)->owner)
             thread_kill(app_at(ov_sel)->owner);
         damage_all();
+        return;
+    }
+    if (down && home_is_chat(w) && (code == 0xC9 || code == 0xD1)) { /* PageUp / PageDown */
+        home_scroll(w->tty->home, code == 0xC9 ? 300 : -300);
         return;
     }
     if (alt && down && layout == LAYOUT_FULL) {
@@ -959,6 +1000,11 @@ static void pointer_full(int buttons, int pressed, int released) {
         }
         return;
     }
+    if (f && home_is_chat(f)) {
+        if ((pressed & 1) && mouse_y >= area_y() && mouse_y < area_y() + area_h())
+            home_click(f->tty->home, mouse_x, mouse_y - area_y());
+        return;
+    }
     if (mouse_y >= area_y() && mouse_y < area_y() + area_h()) feed_app(buttons, pressed);
     else feed_app(buttons & ~1, 0);
 }
@@ -979,8 +1025,10 @@ static void pointer(int nx, int ny, int buttons) {
 
 void wm_mouse(int dx, int dy, int buttons) { pointer(mouse_x + dx, mouse_y + dy, buttons); }
 
-void wm_mouse_abs(int x, int y, int buttons) {
+void wm_mouse_abs(int x, int y, int buttons, int wheel) {
     pointer((int)((long)x * shadow.w / 65536), (int)((long)y * shadow.h / 65536), buttons);
+    window *f = focused();
+    if (wheel && f && home_is_chat(f) && !overview) home_scroll(f->tty->home, -wheel * 3 * 20);
 }
 
 /* --------------------------------------------------------------- modes */

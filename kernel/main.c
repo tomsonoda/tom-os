@@ -36,13 +36,14 @@ void kmain(u32 mb_info, u32 magic) {
             shell->serial = 1;
             /* the shell moves from the VGA text screen into the home screen */
             *console_tty0() = *shell;
+            console_tty0()->home = home_create(console_tty0());
             wm_set_home(wm_create("tom-os", console_tty0(), NULL));
         }
     }
 
-    kprintf("\x1b[1mtom-os %s\x1b[0m - an operating system whose apps are written by an LLM\n",
+    kprintf(UI_HIDE "\x1b[1mtom-os %s\x1b[0m - an operating system whose apps are written by an LLM\n",
             TOMOS_VERSION);
-    kprintf("%zu MiB memory, network %s. Type /help for commands.\n\n", mem_total() >> 20,
+    kprintf("%zu MiB memory, network %s. Type /help for commands.\n\n" UI_END, mem_total() >> 20,
             net_up() ? "up" : "not found");
     shell_run();
 }

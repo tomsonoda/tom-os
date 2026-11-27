@@ -25,7 +25,7 @@ First milestone. Runs on x86-64 under QEMU.
 | Boot in QEMU and talk to the agent | Android devices / aarch64 |
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
 | Serial and VGA text consoles; Japanese text on screen and Japanese input (romaji, kanji conversion by the LLM) in graphical mode | Other non-ASCII scripts on screen; Japanese on the VGA text screen (text mode) |
-| Graphical desktop: a home screen with the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
+| Graphical desktop: a chat-style home screen for the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
 | Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
 | Several apps running at once | Process isolation between apps |
 | Booting from an ISO (BIOS) | UEFI boot, installing to disk |
@@ -147,7 +147,7 @@ On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, 
 
 Graphical mode has two layouts. Switch with `/layout full` and `/layout windows`, or boot with `layout=windows`.
 
-**Full screen (default)**, like a phone. The home screen is the prompt: the shell fills the screen, and you type what you want there. Apps open on top of it, one at a time, filling the screen.
+**Full screen (default)**, like a phone. The home screen is the prompt, shown as a chat: your requests appear in bubbles on the right, the agent's answers on the left, and the steps it takes (writing a file, testing it, starting the app) as quiet notes in between. You type in the rounded box at the bottom; `Enter` or the round button sends. Before the first request, the home screen greets you with a few suggestions you can click. The mouse wheel or `PageUp` / `PageDown` scroll back through the conversation. Apps open on top of the home screen, one at a time, filling the screen.
 
 - Click the bar at the bottom of the screen, or drag it up, to go back to the home screen (`Alt+H`). Apps keep running.
 - In an app, drag the bottom bar sideways to switch to the app that was started before or after it. A short drag springs back. The `<` and `>` at the top and `Alt+Left` / `Alt+Right` do the same.
@@ -303,6 +303,7 @@ python3 tools/claude_gateway.py
 +------------------------------------------------------------------+
 ```
 
+- The home screen's chat view (`gui/home.c`) reads the shell's ordinary output. Private escape sequences, which terminals ignore, mark what each piece of text is (an answer, a step, an error, the waiting indicator, or something to leave out), so the serial console and the windows layout still show the plain text.
 - Single address space. Threads are cooperative: an app gives up the CPU whenever it waits for input, sleeps or shows a frame, and the Lua runtime also yields every few thousand instructions, so a busy app cannot freeze the others.
 - All devices are polled; interrupts are only used to wake the CPU from `HLT`, so the system does not spin while idle.
 - Graphics use the linear framebuffer of QEMU's standard display adapter (1024x768). The window manager keeps one buffer per window and redraws only the part of the screen that changed. The 8x16 font is read from the VGA adapter at boot.

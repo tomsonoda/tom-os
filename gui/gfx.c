@@ -1,4 +1,5 @@
 /* Linear framebuffer (Bochs/QEMU "BGA" display interface) and 2D drawing. */
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include "../kernel/tomos.h"
@@ -102,6 +103,20 @@ void gfx_fill(surface *s, int x, int y, int w, int h, u32 c) {
     int x1 = x + w > s->cx1 ? s->cx1 : x + w, y1 = y + h > s->cy1 ? s->cy1 : y + h;
     if (x1 <= x0) return;
     for (int yy = y0; yy < y1; yy++) fill32(s->px + (size_t)yy * s->w + x0, c, (size_t)(x1 - x0));
+}
+
+void gfx_round(surface *s, int x, int y, int w, int h, int r, u32 c) {
+    if (r * 2 > h) r = h / 2;
+    if (r * 2 > w) r = w / 2;
+    for (int row = 0; row < h; row++) {
+        int inset = 0;
+        int d = row < r ? r - row : row >= h - r ? row - (h - r - 1) : 0;
+        if (d > 0) { /* distance into the corner: inset where the circle starts */
+            double dy = d - 0.5;
+            inset = r - (int)(sqrt((double)r * r - dy * dy) + 0.5);
+        }
+        gfx_fill(s, x + inset, y + row, w - 2 * inset, 1, c);
+    }
 }
 
 void gfx_pixel(surface *s, int x, int y, u32 c) {

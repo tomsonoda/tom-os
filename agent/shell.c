@@ -65,7 +65,7 @@ static void cmd_apps(void) {
 static void run_lua_checked(const char *name, const char *code, size_t len) {
     strbuf err;
     sb_init(&err);
-    if (lua_run(name, code, len, 1, 0, NULL, &err) != 0) kprintf("[error] %s\n", sb_cstr(&err));
+    if (lua_run(name, code, len, 1, 0, NULL, &err) != 0) kprintf(UI_ERROR "[error] %s\n" UI_END, sb_cstr(&err));
     sb_free(&err);
 }
 
@@ -87,7 +87,7 @@ static void command(char *line) {
         sb_init(&err);
         int r = *arg ? app_launch(arg, &err) : -2;
         if (r == -2) console_puts("usage: /run <name>\n");
-        else if (r < 0) kprintf("[error] %s\n", sb_cstr(&err));
+        else if (r < 0) kprintf(UI_ERROR "[error] %s\n" UI_END, sb_cstr(&err));
         else if (r == 1 && wm_layout() == LAYOUT_FULL)
             kprintf("%s is running full screen (drag the bottom bar to switch apps)\n", arg);
         else if (r == 1) kprintf("%s is running in its own window\n", arg);
@@ -168,9 +168,11 @@ static void command(char *line) {
 void shell_run(void) {
     static char line[4096];
     for (;;) {
-        console_puts("\x1b[1;32mtom-os>\x1b[0m ");
+        console_puts(UI_HIDE "\x1b[1;32mtom-os>\x1b[0m ");
         int n = console_readline(line, sizeof line, 1);
+        console_puts(UI_END);
         if (n <= 0) continue;
+        if (thread_tty()->home) home_add_user(thread_tty()->home, line);
         if (line[0] == '/') command(line);
         else agent_turn(line);
     }

@@ -326,24 +326,24 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
         } else if (fs_write(path, content->str, content->len) != 0) {
             sb_puts(out, "error: could not write file (bad path or out of memory)");
         } else {
-            kprintf("  [write_file] %s (%zu bytes)\n", path, content->len);
+            kprintf(UI_NOTE "  [write_file] %s (%zu bytes)\n" UI_END, path, content->len);
             sb_printf(out, "wrote %zu bytes to %s", content->len, path);
         }
     } else if (strcmp(tc->name, "read_file") == 0) {
         size_t len;
         const char *d = path ? fs_read(path, &len) : NULL;
-        kprintf("  [read_file] %s\n", path ? path : "?");
+        kprintf(UI_NOTE "  [read_file] %s\n" UI_END, path ? path : "?");
         if (d) sb_put(out, d, len);
         else sb_printf(out, "error: no such file: %s", path ? path : "(missing path)");
     } else if (strcmp(tc->name, "list_files") == 0) {
         void *it = NULL;
         size_t len;
         const char *name;
-        kprintf("  [list_files]\n");
+        kprintf(UI_NOTE "  [list_files]\n" UI_END);
         while ((name = fs_next(&it, &len))) sb_printf(out, "%s (%zu bytes)\n", name, len);
         if (!out->len) sb_puts(out, "(no files)");
     } else if (strcmp(tc->name, "delete_file") == 0) {
-        kprintf("  [delete_file] %s\n", path ? path : "?");
+        kprintf(UI_NOTE "  [delete_file] %s\n" UI_END, path ? path : "?");
         if (path && fs_delete(path) == 0) sb_printf(out, "deleted %s", path);
         else sb_printf(out, "error: no such file: %s", path ? path : "(missing path)");
     } else if (strcmp(tc->name, "run_lua") == 0) {
@@ -353,9 +353,9 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
         } else {
             strbuf err;
             sb_init(&err);
-            kprintf("  [run_lua] %zu bytes ... ", code->len);
+            kprintf(UI_NOTE "  [run_lua] %zu bytes ... ", code->len);
             int r = lua_run("run_lua", code->str, code->len, 0, 10000, out, &err);
-            kprintf("%s\n", r == 0 ? "ok" : "error");
+            kprintf("%s\n" UI_END, r == 0 ? "ok" : "error");
             if (r != 0) sb_printf(out, "%serror: %s", out->len ? "\n" : "", sb_cstr(&err));
             else if (!out->len) sb_puts(out, "(finished with no output)");
             sb_free(&err);
@@ -366,13 +366,13 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
         } else {
             strbuf err;
             sb_init(&err);
-            kprintf("  [launch_app] %s\n", path);
+            kprintf(UI_NOTE "  [launch_app] %s\n" UI_END, path);
             int r = app_launch(path, &err);
             if (r == 0) sb_puts(out, "the app ran and exited normally");
             else if (r == 1)
                 sb_puts(out, "the app started without errors and is running in its own window");
             else {
-                kprintf("  [app error] %s\n", sb_cstr(&err));
+                kprintf(UI_ERROR "  [app error] %s\n" UI_END, sb_cstr(&err));
                 sb_printf(out, "the app stopped with an error: %s", sb_cstr(&err));
             }
             sb_free(&err);
@@ -470,15 +470,15 @@ static void show_waiting(void) {
     const char *what = !strcmp(http_phase, "waiting for the reply") ? "thinking"
                      : !strcmp(http_phase, "receiving the reply") ? "thinking, reply started"
                      : http_phase;
-    kprintf("\r\x1b[2m(%s... %llu s, Ctrl-C to cancel)\x1b[0m\x1b[K", what,
+    kprintf(UI_STATUS "\r\x1b[2m(%s... %llu s, Ctrl-C to cancel)\x1b[0m\x1b[K" UI_END, what,
             (time_ms() - wait_start) / 1000);
 }
 
 void agent_turn(const char *user_text) {
     int mark = nmsgs;
     if (!net_up()) {
-        kprintf("[error] no network device found. Start QEMU with "
-                "-netdev user,id=n0 -device virtio-net-pci,netdev=n0\n");
+        kprintf(UI_ERROR "[error] no network device found. Start QEMU with "
+                "-netdev user,id=n0 -device virtio-net-pci,netdev=n0\n" UI_END);
         return;
     }
     if (!msg_add("user", user_text)) return;
@@ -493,8 +493,8 @@ void agent_turn(const char *user_text) {
         sb_init(&errmsg);
         int r = llm_call(&errmsg);
         net_wait_hook = NULL;
-        kprintf("\r\x1b[2K");
-        if (r != 0) kprintf("[error] %s\n", sb_cstr(&errmsg));
+        kprintf(UI_STATUS "\r\x1b[2K" UI_END);
+        if (r != 0) kprintf(UI_ERROR "[error] %s\n" UI_END, sb_cstr(&errmsg));
         sb_free(&errmsg);
         if (r != 0) {
             /* drop the unfinished exchange so the history stays well-formed */
@@ -502,7 +502,7 @@ void agent_turn(const char *user_text) {
             return;
         }
         message *am = &msgs[nmsgs - 1];
-        if (am->content && *am->content) kprintf("%s\n", am->content);
+        if (am->content && *am->content) kprintf(UI_REPLY "%s\n" UI_END, am->content);
         if (!am->ncalls) return;
 
         int ncalls = am->ncalls, idx = nmsgs - 1;
@@ -515,5 +515,5 @@ void agent_turn(const char *user_text) {
             sb_free(&out);
         }
     }
-    kprintf("[stopped after %d steps]\n", MAX_STEPS);
+    kprintf(UI_ERROR "[stopped after %d steps]\n" UI_END, MAX_STEPS);
 }

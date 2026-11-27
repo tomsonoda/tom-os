@@ -290,6 +290,7 @@ void console_write(const char *s, size_t n) {
         }
         return;
     }
+    if (t->home && !t->home_mute) home_feed(t->home, s, n);
     for (size_t i = 0; i < n; i++) {
         if (t->serial) {
             if (s[i] == '\n') serial_putc('\r');
@@ -453,7 +454,7 @@ static void vmmouse_poll(void) {
         if ((r[0] & 0xFFFF) < 4) return;
         vmport(VMMOUSE_DATA, 4, r);
         int buttons = ((r[0] & 0x20) ? 1 : 0) | ((r[0] & 0x10) ? 2 : 0) | ((r[0] & 0x08) ? 4 : 0);
-        if (wm_active()) wm_mouse_abs((int)(r[1] & 0xFFFF), (int)(r[2] & 0xFFFF), buttons);
+        if (wm_active()) wm_mouse_abs((int)(r[1] & 0xFFFF), (int)(r[2] & 0xFFFF), buttons, (int)(signed char)r[3]);
     }
 }
 
@@ -753,6 +754,21 @@ static void compose_katakana(compose *k) {
     }
 }
 
+/* The home screen shows the line being edited in its input box. */
+static void show_input(const char *buf, size_t n, const compose *k) {
+    tty *t = thread_tty();
+    if (!t->home) return;
+    strbuf c;
+    sb_init(&c);
+    if (k->converted) sb_put(&c, sb_cstr((strbuf *)&k->cand), k->cand.len);
+    else {
+        sb_put(&c, sb_cstr((strbuf *)&k->pre), k->pre.len);
+        sb_put(&c, k->rom, (size_t)k->nrom);
+    }
+    home_set_input(t->home, buf, n, sb_cstr(&c), c.len, k->converted);
+    sb_free(&c);
+}
+
 int console_readline(char *buf, size_t max, int use_history) {
     size_t n = 0;
     int hpos = history_n;
@@ -761,7 +777,11 @@ int console_readline(char *buf, size_t max, int use_history) {
     sb_init(&k.pre);
     sb_init(&k.cand);
     int result;
+    tty *self = thread_tty();
+    int muted = self->home_mute;
+    self->home_mute = 1;
     for (;;) {
+        show_input(buf, n, &k);
         int c = console_getc(-1);
         if (c == KEY_BREAK) {
             compose_erase(&k);
@@ -878,6 +898,8 @@ int console_readline(char *buf, size_t max, int use_history) {
     }
     sb_free(&k.pre);
     sb_free(&k.cand);
+    self->home_mute = muted;
+    if (self->home) home_set_input(self->home, "", 0, "", 0, 0);
     return result;
 }
 

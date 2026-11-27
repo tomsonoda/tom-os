@@ -17,7 +17,7 @@ from gui_test import Monitor, Screen  # noqa: E402
 PROMPT = boot_test.PROMPT
 STATUS_H = 24
 BLACK = 0x000000
-IME_ON = 0x2F6DB5   # indicator background when on
+IME_ON = 0xD0794F   # indicator background when on
 W = 1024
 
 
@@ -52,12 +52,16 @@ def main():
                                vm.iso and vm.command("/set llm 10.0.2.2:%d" % port, PROMPT)))
 
         def display():
+            # in the windows layout the shell is a terminal at (24, 32)
+            vm.command("/layout windows", PROMPT)
             vm.command('/lua tomos.cls() print("日本語X")', PROMPT)
             time.sleep(0.5)
+            ox, oy = 24, 32
             for i in range(3):  # three full-width characters, 16 pixels each
-                assert nonblack(16 * i, STATUS_H, 16 * i + 16, STATUS_H + 16) > 20, "glyph %d" % i
-            assert nonblack(48, STATUS_H, 56, STATUS_H + 16) > 5, "X right after them (column 7)"
-            assert nonblack(56, STATUS_H, 80, STATUS_H + 16) == 0, "nothing after X"
+                assert nonblack(ox + 16 * i, oy, ox + 16 * i + 16, oy + 16) > 20, "glyph %d" % i
+            assert nonblack(ox + 48, oy, ox + 56, oy + 16) > 5, "X right after them (column 7)"
+            assert nonblack(ox + 56, oy, ox + 80, oy + 16) == 0, "nothing after X"
+            vm.command("/layout full", PROMPT)
         step("Japanese text is drawn, two columns per character", display)
 
         def toggle():

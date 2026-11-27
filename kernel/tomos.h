@@ -58,6 +58,16 @@ typedef struct term {
 
 #define TERM_CONT 0xFFFFFFFFu
 
+/* Markers in the shell's output for the home screen's chat view (gui/home.c).
+ * They are private escape sequences, which terminals ignore. */
+#define UI_REPLY "\x1b[?7101h"  /* the agent's answer */
+#define UI_NOTE "\x1b[?7102h"   /* a step such as a tool call */
+#define UI_ERROR "\x1b[?7103h"
+#define UI_STATUS "\x1b[?7104h" /* replaces the waiting indicator; empty clears it */
+#define UI_HIDE "\x1b[?7105h"   /* not shown in the chat (prompt, line editing) */
+#define UI_END "\x1b[?7100l"
+typedef struct homeview homeview;
+
 /* Where a thread's console I/O goes. */
 typedef struct tty {
     term *term;      /* may be NULL */
@@ -67,6 +77,8 @@ typedef struct tty {
     u8 inq[1024];
     unsigned head, tail;
     int brk;         /* Ctrl-C seen */
+    homeview *home;  /* also show the output in the home screen's chat view */
+    int home_mute;   /* line editing: echo goes to the terminal only */
 } tty;
 
 void console_init(void);
@@ -158,6 +170,7 @@ const u8 *font_wide(u32 cp);
 /* Screen columns a character takes: 2 for full-width Japanese, else 1. */
 int font_cells(u32 cp);
 void gfx_glyph16(surface *s, int x, int y, const u8 *bits, u32 fg, long bg, int scale);
+void gfx_round(surface *s, int x, int y, int w, int h, int r, u32 c); /* filled, rounded corners */
 void gfx_blit_resize(surface *dst, int dx, int dy, int dw, int dh, const u32 *src, int sw, int sh);
 
 /* ---- window manager (gui/wm.c) ---- */
@@ -193,12 +206,23 @@ void wm_present(window *w);
 void wm_set_title(window *w, const char *title);
 void wm_key(int code, int down, int alt, const char *chars);
 void wm_mouse(int dx, int dy, int buttons);          /* relative pointer (PS/2) */
-void wm_mouse_abs(int x, int y, int buttons);        /* absolute pointer, 0..65535 */
+void wm_mouse_abs(int x, int y, int buttons, int wheel); /* absolute pointer, 0..65535 */
 /* Layouts: full screen (one app at a time, like a phone) or overlapping windows. */
 enum { LAYOUT_FULL, LAYOUT_WINDOWS };
 void wm_set_layout(int layout);
 void wm_set_home(window *w); /* the shell: the home screen apps open on top of */
 void wm_ime_changed(void);   /* redraw the input-method indicator */
+
+/* ---- home screen chat view (gui/home.c) ---- */
+homeview *home_create(tty *t);
+void home_feed(homeview *h, const char *s, size_t n);
+void home_add_user(homeview *h, const char *line);
+void home_set_input(homeview *h, const char *line, size_t n, const char *comp, size_t cn, int converted);
+void home_render(homeview *h, surface *s);
+int home_dirty(const homeview *h);
+void home_invalidate(homeview *h);
+void home_click(homeview *h, int x, int y);
+void home_scroll(homeview *h, int dy);
 int wm_layout(void);
 void wm_canvas_max(int *w, int *h); /* largest canvas an app can use */
 int wm_screen_w(void);

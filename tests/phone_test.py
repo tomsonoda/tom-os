@@ -5,6 +5,7 @@ shows the running apps. Drives
 QEMU with key presses (monitor) and an absolute pointer (QMP) and checks
 pixels in screenshots."""
 import os
+import re
 import sys
 import tempfile
 import time
@@ -19,7 +20,9 @@ from gui_test import Monitor, Pointer, Screen  # noqa: E402
 PROMPT = boot_test.PROMPT
 W, H = 1024, 768
 STATUS_H, BAR_H = 24, 28
-BAR, OVERVIEW, BLACK = 0x141A1F, 0x0E2A36, 0x000000
+BAR, OVERVIEW, BLACK = 0xF6F3EE, 0xE6E0D6, 0x000000
+HOME = 0xF6F3EE      # the home screen background
+USER_BUBBLE, ACCENT = 0xE9E2D6, 0xD0794F
 APP_BG = 0x205020  # the test app's background
 
 # A full-screen canvas app: green background, records every click (in its own
@@ -53,7 +56,8 @@ def main():
 
     def cat(path):
         vm.command("/cat " + path, PROMPT)
-        return vm.out.rsplit("/cat " + path, 1)[1].split()[0]
+        out = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", vm.out.rsplit("/cat " + path, 1)[1])
+        return out.split()[0]
 
     def wait_file(path, expected, timeout=5):
         deadline = time.time() + timeout
@@ -74,17 +78,26 @@ def main():
             vm.expect(PROMPT)
             if vm.iso:
                 vm.command("/set llm 10.0.2.2:%d" % port, PROMPT)
-            vm.command("/info", "graphical (full screen)", "absolute pointer", PROMPT)
             scr.wait_pixel(300, 10, BAR, "status bar")
             scr.wait_pixel(300, H - 5, BAR, "home bar")
-            scr.wait_pixel(5, 400, BLACK, "the home screen fills the screen")
+            scr.wait_pixel(5, 400, HOME, "the home screen fills the screen")
         step("boots to the home screen (the prompt) with a status bar and a home bar", boot)
 
-        def wide_home():
-            vm.command('/lua tomos.cls() print(string.rep("#", 120))', PROMPT)
+        def chat():
+            if vm.iso:  # /set llm already left the welcome screen: type the request
+                vm.send("電卓を作って\n")
+            else:
+                scr.wait_pixel(222, 373, 0xFFFFFF, "a suggestion on the welcome screen")
+                ptr.click(222, 373)              # "電卓を作って"
+            vm.expect("echo: 電卓を作って")
+            vm.expect(PROMPT)
             time.sleep(0.5)
-            assert nonblack_in(119 * 8, STATUS_H, 120 * 8, STATUS_H + 16), "column 120 of the first line"
-        step("the home screen's terminal is as wide as the screen", wide_home)
+            scr.grab()
+            colours = {scr.pixel(x, y) for x in range(0, W, 4) for y in range(STATUS_H, 300, 4)}
+            assert USER_BUBBLE in colours, "the request in a bubble"
+            assert ACCENT in colours, "the reply next to the tom-os mark"
+            vm.command("/info", "graphical (full screen)", "absolute pointer", PROMPT)
+        step("the home screen is a chat: suggestions, bubbles, replies", chat)
 
         def run_app():
             vm.command('/lua tomos.write_file("apps/clicker.lua", [[%s]])' % CLICK_APP, PROMPT)
@@ -106,18 +119,18 @@ def main():
 
         def home_and_back():
             ptr.click(500, H - 12)               # click the home bar: home
-            scr.wait_pixel(600, 400, BLACK, "home screen")
+            scr.wait_pixel(5, 400, HOME, "home screen")
             vm.command("/ps", "apps/clicker.lua", PROMPT)   # still running
             ptr.click(500, H - 12)               # at home: the running apps
             scr.wait_pixel(100, 150, OVERVIEW, "running apps")
             ptr.click(500, 400)                  # the only card
             scr.wait_pixel(600, 400, APP_BG, "back in the app")
             ptr.drag(500, H - 12, 500, H - 200)  # drag the bar up: home
-            scr.wait_pixel(600, 400, BLACK, "home after dragging up")
+            scr.wait_pixel(5, 400, HOME, "home after dragging up")
             mon.keys("alt-tab")                  # from home: the first app
             scr.wait_pixel(600, 400, APP_BG, "app after Alt+Tab")
             mon.keys("alt-h")
-            scr.wait_pixel(600, 400, BLACK, "home after Alt+H")
+            scr.wait_pixel(5, 400, HOME, "home after Alt+H")
         step("the home bar goes home; apps keep running and can be reopened", home_and_back)
 
         def small():
@@ -161,7 +174,7 @@ def main():
 
         def close():
             mon.keys("alt-q")                    # close the current app: back home
-            scr.wait_pixel(600, 400, BLACK, "home after closing the app")
+            scr.wait_pixel(5, 400, HOME, "home after closing the app")
             vm.command("/ps", "apps/small.lua", PROMPT)
             assert "clicker" not in vm.out.rsplit("/ps", 1)[1], "clicker should be closed"
             ptr.click(500, H - 12)
@@ -169,7 +182,7 @@ def main():
             ptr.drag(500, 400, 500, 120, steps=10)   # flick the only card up
             time.sleep(0.8)
             vm.command("/ps", "(no apps are running)", PROMPT)
-            scr.wait_pixel(600, 400, BLACK, "home once no app is left")
+            scr.wait_pixel(5, 400, HOME, "home once no app is left")
             mon.keys("alt-q")                    # home cannot be closed
             time.sleep(0.3)
             vm.command("/ps", "(no apps are running)", PROMPT)
@@ -180,7 +193,7 @@ def main():
             scr.wait_pixel(1000, 600, 0x1F4E5F, "windows desktop")
             vm.command("/layout full", PROMPT)
             scr.wait_pixel(300, H - 5, BAR, "home bar again")
-            scr.wait_pixel(5, 400, BLACK, "home fills the screen again")
+            scr.wait_pixel(5, 400, HOME, "home fills the screen again")
             vm.command("/layout", "layout: full", PROMPT)
         step("/layout switches between full screen and windows", layout)
 
