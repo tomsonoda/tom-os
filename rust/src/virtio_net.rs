@@ -6,8 +6,6 @@ use alloc::vec::Vec;
 use crate::virtio::{self, Kind, Queue, Transport};
 
 const FEATURE_MAC: u32 = 1 << 5;
-/// struct virtio_net_hdr without mergeable buffers
-const HDR_LEN: usize = 10;
 const BUF_SIZE: usize = 2048;
 const RX_BUFS: u16 = 128;
 const TX_BUFS: u16 = 256;
@@ -18,6 +16,9 @@ pub struct Nic {
     rx: Queue,
     tx: Queue,
     rx_returned: bool,
+    /// the length of the header before each packet: 10 bytes with the
+    /// legacy interface, 12 with the current one
+    header: usize,
 }
 
 impl Nic {
@@ -37,7 +38,8 @@ impl Nic {
         let tx = Queue::new(dev.as_mut(), 1, TX_BUFS, BUF_SIZE)?;
         dev.set_status(1 | 2 | 4); // driver ok
         rx.fill(dev.as_mut());
-        Some(Nic { dev, mac, rx, tx, rx_returned: false })
+        let header = if dev.modern() { 12 } else { 10 };
+        Some(Nic { dev, mac, rx, tx, rx_returned: false, header })
     }
 
     pub fn mac(&self) -> [u8; 6] {
@@ -47,7 +49,7 @@ impl Nic {
     /// Sends one Ethernet frame given in pieces.
     pub fn send(&mut self, parts: &[&[u8]]) {
         let len: usize = parts.iter().map(|p| p.len()).sum();
-        if len > BUF_SIZE - HDR_LEN {
+        if len > BUF_SIZE - self.header {
             return;
         }
         // wait for a free slot (the device consumes them almost immediately)
@@ -62,16 +64,17 @@ impl Nic {
             }
             core::hint::spin_loop();
         };
+        let header = self.header;
         let buf = self.tx.buf(slot);
-        buf[..HDR_LEN].fill(0);
-        let mut at = HDR_LEN;
+        buf[..header].fill(0);
+        let mut at = header;
         for p in parts {
             buf[at..at + p.len()].copy_from_slice(p);
             at += p.len();
         }
-        if at < HDR_LEN + 60 {
-            buf[at..HDR_LEN + 60].fill(0); // minimum frame size
-            at = HDR_LEN + 60;
+        if at < header + 60 {
+            buf[at..header + 60].fill(0); // minimum frame size
+            at = header + 60;
         }
         self.tx.set_desc(slot, at as u32, 0);
         self.tx.push_avail(slot);
@@ -85,10 +88,11 @@ impl Nic {
             if id >= self.rx.slots as u32 {
                 continue; // not a buffer of ours: a broken device
             }
-            let ok = len > HDR_LEN && len <= BUF_SIZE;
+            let header = self.header;
+            let ok = len > header && len <= BUF_SIZE;
             if ok {
                 frame.clear();
-                frame.extend_from_slice(&self.rx.buf(slot)[HDR_LEN..len]);
+                frame.extend_from_slice(&self.rx.buf(slot)[header..len]);
             }
             self.rx.push_avail(slot); // the buffer goes back to the device
             self.rx_returned = true;

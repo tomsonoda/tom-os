@@ -98,7 +98,7 @@ impl<T> KCell<T> {
 }
 
 // The Lua interpreter (third_party/remedy-lua/src/nostd.rs) asks the kernel
-// for its clocks by these names.
+// for its clocks and for something unpredictable by these names.
 
 #[unsafe(export_name = "time_ms")]
 extern "C" fn time_ms_for_lua() -> u64 {
@@ -108,4 +108,9 @@ extern "C" fn time_ms_for_lua() -> u64 {
 #[unsafe(export_name = "rtc_unix_time")]
 extern "C" fn unix_time_for_lua() -> u64 {
     crate::cpu::unix_time()
+}
+
+#[unsafe(export_name = "kernel_entropy")]
+extern "C" fn entropy_for_lua() -> u64 {
+    crate::cpu::entropy()
 }

@@ -292,11 +292,12 @@ macro_rules! thread_local {
     };
 }
 
-/// What the kernel provides (see lua/ in tom-os).
+/// What the kernel provides (see rust/src/rt.rs in tom-os).
 pub mod host {
     unsafe extern "C" {
         fn time_ms() -> u64;
         fn rtc_unix_time() -> u64;
+        fn kernel_entropy() -> u64;
     }
     pub fn millis() -> u64 {
         unsafe { time_ms() }
@@ -305,7 +306,7 @@ pub mod host {
         unsafe { rtc_unix_time() }
     }
     pub fn entropy() -> u64 {
-        let t = unsafe { core::arch::x86_64::_rdtsc() };
+        let t = unsafe { kernel_entropy() };
         t ^ (millis() << 32) ^ unix_seconds().rotate_left(17)
     }
 }

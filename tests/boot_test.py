@@ -19,18 +19,29 @@ class VM:
         # TOMOS_ISO=<path> boots the CD image through GRUB instead of loading
         # the kernel directly; the LLM address is then set with /set.
         self.iso = os.environ.get("TOMOS_ISO")
-        if self.iso:
-            boot = ["-cdrom", os.path.join(ROOT, self.iso), "-boot", "d"]
+        # TOMOS_ARCH=aarch64 tests the ARM version on QEMU's "virt" machine.
+        arch = os.environ.get("TOMOS_ARCH", "x86_64")
+        append = "llm=10.0.2.2:%d model=mock%s %s" % (port, "" if gui else " gui=0", args)
+        if arch == "aarch64":
+            machine = ["-M", "virt", "-cpu", "cortex-a72", "-global", "virtio-mmio.force-legacy=false",
+                       "-netdev", "user,id=n0", "-device", "virtio-net-device,netdev=n0"]
+            if gui:
+                machine += ["-device", "ramfb", "-device", "virtio-keyboard-device",
+                            "-device", "virtio-tablet-device"]
+            boot = ["-kernel", os.path.join(ROOT, "build", "aarch64", "Image"), "-append", append]
         else:
-            boot = ["-kernel", os.path.join(ROOT, "build", "tomos.elf"),
-                    "-append", "llm=10.0.2.2:%d model=mock%s %s" % (port, "" if gui else " gui=0", args)]
+            machine = ["-vga", "none", "-device", "VGA,vgamem_mb=64",
+                       "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"]
+            if self.iso:
+                boot = ["-cdrom", os.path.join(ROOT, self.iso), "-boot", "d"]
+            else:
+                boot = ["-kernel", os.path.join(ROOT, "build", "tomos.elf"), "-append", append]
         mon = ["-monitor", "unix:%s,server,nowait" % monitor] if monitor else ["-monitor", "none"]
         if qmp:
             mon += ["-qmp", "unix:%s,server,nowait" % qmp]
         self.proc = subprocess.Popen(
-            [os.environ.get("QEMU", "qemu-system-x86_64"), "-m", "256M", "-no-reboot",
-             "-display", "none", "-serial", "stdio", "-vga", "none", "-device", "VGA,vgamem_mb=64",
-             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + mon + boot + list(qemu_args),
+            [os.environ.get("QEMU", "qemu-system-" + arch), "-m", "256M", "-no-reboot",
+             "-display", "none", "-serial", "stdio"] + machine + mon + boot + list(qemu_args),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.gui = gui
         self.raw = b""  # decoded as a whole: multi-byte characters arrive split

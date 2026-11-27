@@ -1664,6 +1664,7 @@ pub fn key(code: i32, down: bool, alt: bool, chars: Option<&[u8]>) {
 }
 
 /// Relative pointer movement (PS/2 mouse).
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub fn mouse(dx: i32, dy: i32, buttons: i32) {
     WM.with(|wm| wm.pointer(wm.mouse_x.saturating_add(dx), wm.mouse_y.saturating_add(dy), buttons))
 }

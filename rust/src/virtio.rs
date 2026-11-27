@@ -23,6 +23,11 @@ pub trait Transport {
     fn set_status(&mut self, status: u8);
     /// A byte of the device-specific configuration.
     fn config(&mut self, offset: usize) -> u8;
+    /// True for version 1 of the virtio standard (as opposed to "legacy"):
+    /// among other things, network packets then have a longer header.
+    fn modern(&self) -> bool {
+        false
+    }
     /// The largest size of queue `index`; 0 if there is no such queue.
     fn queue_max(&mut self, index: u16) -> u16;
     /// True if a queue must have exactly its largest size.

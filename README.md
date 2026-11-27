@@ -12,21 +12,21 @@ tom-os> make a number guessing game
 Guess a number from 1 to 100: _
 ```
 
-tom-os does not use Linux or any other existing kernel. Console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in Rust; only the boot code and the thread switch (about 200 lines, `arch/x86_64/boot.asm`) are assembly. There is no C. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 2 MiB and boots instantly.
+tom-os does not use Linux or any other existing kernel. Console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in Rust; only the boot code and the thread switch are assembly (about 200 lines for the PC in `arch/x86_64/boot.asm`, about 150 for ARM inside `rust/src/arch/aarch64`). There is no C. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 2 MiB and boots instantly.
 
 The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but goes in a different direction. llm.asm is a chat REPL that runs model inference inside the kernel. tom-os starts with an agent that can use tools and a way to run the apps it creates.
 
 ## Status
 
-First milestone. Runs on x86-64 under QEMU.
+Runs under QEMU as a PC (x86-64) and as a 64-bit ARM machine (aarch64, QEMU's `virt` machine). The ARM version is the first step towards Android devices; it does not run on a real phone yet.
 
 | Works | Not yet |
 |---|---|
-| Boot in QEMU and talk to the agent | Android devices / aarch64 |
+| Boot in QEMU, on x86-64 and on aarch64, and talk to the agent | Real Android devices (boot loaders, displays, touch screens and network hardware differ per device) |
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
 | Serial and VGA text consoles; Japanese text on screen and Japanese input (romaji, kanji conversion by the LLM) in graphical mode | Other non-ASCII scripts on screen; Japanese on the VGA text screen (text mode) |
 | Graphical desktop: a chat-style home screen for the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | GPU acceleration, touch gestures from a trackpad |
-| Sound: an AC'97 driver and a synthesizer (tones, melodies, samples) for apps | Recording, sound files (WAV/MP3) |
+| Sound: an AC'97 driver and a synthesizer (tones, melodies, samples) for apps (PC version) | Sound in the ARM version; recording, sound files (WAV/MP3) |
 | Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
 | Several apps running at once | Process isolation between apps |
 | Booting from an ISO (BIOS) | UEFI boot, installing to disk |
@@ -40,6 +40,7 @@ First milestone. Runs on x86-64 under QEMU.
   `brew install nasm x86_64-elf-binutils qemu`
 - No C compiler is needed.
 - `qemu-system-x86_64`
+- For the ARM version only rustup and `qemu-system-aarch64` are needed (no `nasm`, no binutils).
 - Python 3 (for the tests and the host-side gateways)
 
 ## Build and test
@@ -50,6 +51,17 @@ make test     # boots in QEMU and runs the whole flow against a mock LLM
 make iso      # builds build/tomos.iso (CD image, BIOS boot via GRUB)
 make test-iso # runs the same test booting from the ISO
 ```
+
+The ARM version is built and run with `ARCH=aarch64` on every command:
+
+```sh
+make ARCH=aarch64          # builds build/aarch64/Image
+make ARCH=aarch64 test     # the same tests on QEMU's ARM "virt" machine (no sound test)
+make ARCH=aarch64 run      # text mode in this terminal
+make ARCH=aarch64 run-gui  # graphical mode in a QEMU window
+```
+
+It is the same kernel: only `rust/src/arch/aarch64` (about 900 lines) differs from the PC version. The image has the header of a Linux arm64 kernel, so a boot loader that can start Linux can start it. It expects the devices of the `virt` machine: a PL011 serial port, the ARM generic timer and interrupt controller (GICv2), virtio devices with memory-mapped registers (network, keyboard, tablet), and QEMU's `ramfb` for the picture. There is no ISO for ARM.
 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
@@ -318,21 +330,25 @@ python3 tools/claude_gateway.py
 |   io / os / tomos / gfx /     |     connection, retransmission)   |
 |   sound                       |          net.rs   Ethernet, ARP,  |
 | rust/src/fs.rs  in-memory FS  |                   IPv4            |
-| rust/src/wm.rs  windows,      |          virtio_net.rs, pci.rs    |
+| rust/src/wm.rs  windows,      |          virtio_net.rs, virtio.rs |
 |            focus, compositor  |                   network card    |
 | rust/src/gfx.rs  framebuffer, |                                   |
 |            fonts, 2D drawing  |                                   |
 +-------------------------------+----------------------------------+
-| rust/src/console.rs  terminals, serial, PS/2 keyboard and mouse,  |
-|          line editor, Japanese input                              |
-|   sched.rs  cooperative threads      mem.rs  heap, boot info      |
-|   cpu.rs    interrupts, timer, clock sound.rs  AC'97, synthesizer |
+| rust/src/console.rs  terminals, keyboard decoding, line editor,   |
+|          Japanese input                                           |
+|   sched.rs  cooperative threads      mem.rs    heap               |
 |   json.rs   JSON                     start.rs  start-up           |
-| arch/x86_64/boot.asm  Multiboot1 -> long mode, thread switch      |
++------------------------------------------------------------------+
+| rust/src/arch/  what differs between machines                     |
+|   x86_64/   Multiboot, PIC/PIT/RTC, COM1, PS/2, VGA + BGA display,|
+|             PCI, AC'97          (+ arch/x86_64/boot.asm)          |
+|   aarch64/  device tree, GIC + generic timer, PL011, virtio-mmio, |
+|             virtio keyboard and tablet, ramfb                     |
 +------------------------------------------------------------------+
 ```
 
-- Memory safety: the kernel is Rust, and `unsafe` is confined to the modules that touch hardware or raw memory: port I/O (`pci.rs`), the heap allocator and boot information (`mem.rs`), the interrupt table (`cpu.rs`), the thread switch (`sched.rs`), the keyboard, mouse and text screen (`console.rs`), the device rings and buffers of the network and sound cards (`virtio_net.rs`, `sound.rs`) and the framebuffer (`gfx.rs`), plus start-up and the cell that holds kernel state (`start.rs`, `rt.rs`). The agent, the shell, HTTP, JSON, TCP/IP, the file system, the window manager, the home screen, app management and the Lua bindings contain no `unsafe` at all. Windows, terminals and threads are named by ids that are never reused, so code that holds a stale one finds nothing instead of touching freed memory.
+- Memory safety: the kernel is Rust, and `unsafe` is confined to the code that touches hardware or raw memory: the machine-specific modules under `rust/src/arch` (port and register access, the interrupt table, boot information, the thread switch, the display and sound hardware), the heap allocator (`mem.rs`), the rings and buffers shared with virtio devices (`virtio.rs`), the framebuffer surface (`gfx.rs`), and a few lines in `sched.rs`, `start.rs` and `rt.rs`. The agent, the shell, HTTP, JSON, TCP/IP, the file system, the window manager, the home screen, the console, app management and the Lua bindings contain no `unsafe` at all. Windows, terminals and threads are named by ids that are never reused, so code that holds a stale one finds nothing instead of touching freed memory.
 - The home screen's chat view (`rust/src/home.rs`) reads the shell's ordinary output. Private escape sequences, which terminals ignore, mark what each piece of text is (an answer, a step, an error, the waiting indicator, or something to leave out), so the serial console and the windows layout still show the plain text.
 - Single address space. Threads are cooperative: an app gives up the CPU whenever it waits for input, sleeps or shows a frame, and the Lua runtime also yields every few thousand instructions, so a busy app cannot freeze the others.
 - All devices are polled; interrupts are only used to wake the CPU from `HLT`, so the system does not spin while idle.
@@ -384,6 +400,7 @@ end
 - Files live in memory and are lost on reboot.
 - The IP address is static (default `10.0.2.15`, gateway `10.0.2.2`; change with the kernel arguments `ip=`, `gw=`, `mask=`).
 - The conversation history is never trimmed. Use `/clear` when it gets long.
+- The ARM version has no sound, and runs only on QEMU's `virt` machine (it has not been tried on real ARM hardware or on other virtual machine monitors).
 - Booting on real PC hardware has not been tested. virtio-net is the only network driver, and graphical mode needs the display interface of QEMU's standard VGA adapter.
 - The mode is chosen at boot; switching between graphical and text mode needs a reboot.
 - Windows cannot be resized by the user, and the screen size does not follow the host window by itself (QEMU scales the picture; `/display` changes the real size).
@@ -393,7 +410,7 @@ end
 1. Persistent storage (virtio-blk) so apps survive a reboot
 2. Streaming display of LLM responses
 3. Local inference inside the kernel with a small model
-4. aarch64 support, on the way to Android devices
+4. Android devices: the ARM version runs on QEMU's `virt` machine; next come virtio over PCI and virtio-gpu (what Android's own virtual machine framework offers), a position-independent image, and then drivers for one real device
 5. Other scripts on screen (a larger Unicode font), keyboard layouts other than US, a local kana-kanji dictionary
 6. Images, sound files, and a richer widget set for apps
 7. App isolation (user mode, memory protection)

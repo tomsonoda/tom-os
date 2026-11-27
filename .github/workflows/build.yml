@@ -15,7 +15,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm qemu-system-x86 grub-pc-bin grub-common xorriso mtools
+          sudo apt-get install -y nasm qemu-system-x86 qemu-system-arm grub-pc-bin grub-common xorriso mtools
           pip install anthropic
       - name: Build kernel
         run: make
@@ -25,8 +25,14 @@ jobs:
         run: make iso
       - name: Test (boot from ISO)
         run: make test-iso
+      - name: Build kernel (ARM)
+        run: make ARCH=aarch64
+      - name: Test (ARM)
+        run: make ARCH=aarch64 test
       - uses: actions/upload-artifact@v4
         with:
           name: tomos-iso
-          path: build/tomos.iso
+          path: |
+            build/tomos.iso
+            build/aarch64/Image
           if-no-files-found: error
