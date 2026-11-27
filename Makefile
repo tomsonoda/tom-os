@@ -28,7 +28,10 @@ QEMU    ?= qemu-system-$(ARCH)
 GRUB_MKRESCUE ?= grub-mkrescue
 
 # Fail early with a hint instead of a confusing compiler error.
-ifeq ($(ARCH),x86_64)
+ifneq ($(filter web run-web test-web,$(MAKECMDGOALS)),)
+# the browser version needs neither an assembler nor a linker of its own
+REQUIRED := cargo wasm-opt
+else ifeq ($(ARCH),x86_64)
 REQUIRED := $(LD) $(OBJCOPY) $(AS) cargo
 else
 REQUIRED := cargo
@@ -39,7 +42,7 @@ ifeq ($(filter clean,$(MAKECMDGOALS)),)
 ifeq ($(shell uname -s),Darwin)
 $(error Missing tools: $(MISSING). Install them with: brew install nasm x86_64-elf-binutils qemu rustup (then: rustup-init))
 else
-$(error Missing tools: $(MISSING). Install binutils, nasm and Rust (https://rustup.rs))
+$(error Missing tools: $(MISSING). Install binutils, nasm and Rust (https://rustup.rs); wasm-opt is in the binaryen package)
 endif
 endif
 endif
