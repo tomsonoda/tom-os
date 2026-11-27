@@ -5,6 +5,7 @@ use alloc::collections::VecDeque;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::{self, NET, Net, NetError, PROTO_TCP, fold, get16, get32, idle, now, put16, put32, sum};
+use crate::cpu;
 use crate::rt::KCell;
 
 const FIN: u8 = 0x01;
@@ -93,8 +94,7 @@ fn pseudo_sum(src: u32, dst: u32, len: usize) -> u32 {
 }
 
 fn timestamp() -> u64 {
-    // SAFETY: RDTSC is available on every x86-64 CPU
-    unsafe { core::arch::x86_64::_rdtsc() }
+    cpu::tsc()
 }
 
 impl Net {

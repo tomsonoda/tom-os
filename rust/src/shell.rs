@@ -4,7 +4,7 @@
 
 use crate::apps::{self, Started};
 use crate::rt::{self, console, lossy, ui};
-use crate::{agent, fs, home, kprint, net, run, sys, wm};
+use crate::{agent, cpu, fs, home, kprint, mem, net, run, sound, wm};
 
 const HELP: &str = "Type what you want in plain language; the agent answers or builds an app for it.
 Commands:
@@ -48,7 +48,7 @@ fn error(text: &str) {
 
 fn cmd_info() {
     kprint!("tom-os {}\n", rt::VERSION);
-    let (used, total) = unsafe { (sys::mem_used(), sys::mem_total()) };
+    let (used, total) = (mem::used(), mem::total());
     kprint!("memory : {} KiB used of {} MiB\n", used / 1024, total >> 20);
     if let Some((mac, ip)) = net::address() {
         let [a, b, c, d, e, f] = mac;
@@ -70,7 +70,7 @@ fn cmd_info() {
     } else {
         kprint!("display: text\n");
     }
-    let sound = if unsafe { sys::sound_available() } != 0 {
+    let sound = if sound::available() {
         "AC'97, 48 kHz stereo"
     } else {
         "no sound card (start QEMU with -device AC97)"
@@ -197,9 +197,9 @@ fn command(line: &[u8]) {
         "/info" => cmd_info(),
         "/halt" => {
             console(b"powering off\n");
-            unsafe { sys::cpu_poweroff() };
+            cpu::poweroff();
         }
-        "/reboot" => unsafe { sys::cpu_reboot() },
+        "/reboot" => cpu::reboot(),
         _ => kprint!("unknown command {name} (try /help)\n"),
     }
 }

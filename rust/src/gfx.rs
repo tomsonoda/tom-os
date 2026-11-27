@@ -2,7 +2,6 @@
 //! drawing.
 
 use alloc::vec::Vec;
-use core::ffi::c_char;
 
 use crate::pci::{self, inw, outw};
 use crate::rt::KCell;
@@ -452,24 +451,4 @@ pub fn fb_init(w: i32, h: i32) -> i32 {
     // and has at least that much video memory (checked above)
     SCREEN.with(|s| *s = unsafe { Surface::new(addr as *mut u32, w, h) });
     0
-}
-
-// ------------------------------------------------------------ C interface
-// For the console, which is still C.
-
-/// Decodes one character of `n` (at least 1) bytes; returns the bytes used.
-///
-/// # Safety
-/// `s` must point to `n` bytes and `cp` to a writable u32.
-#[unsafe(export_name = "utf8_decode")]
-pub unsafe extern "C" fn utf8_decode_c(s: *const c_char, n: usize, cp: *mut u32) -> i32 {
-    let (c, used) = utf8_decode(unsafe { core::slice::from_raw_parts(s as *const u8, n.max(1)) });
-    unsafe { cp.write(c) };
-    used as i32
-}
-
-/// Screen columns a character takes: 2 for full-width Japanese, else 1.
-#[unsafe(no_mangle)]
-pub extern "C" fn font_cells(cp: u32) -> i32 {
-    if font_wide(cp).is_some() { 2 } else { 1 }
 }

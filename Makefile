@@ -1,19 +1,18 @@
 # tom-os build
 #
-# The Lua runtime is Rust and needs rustup: rust/rust-toolchain.toml selects
-# a nightly toolchain, which rustup downloads on the first build.
-#
-# The rest of the kernel is a freestanding x86-64 ELF, so it needs a GNU toolchain that
-# targets ELF. On Linux the system gcc works. On macOS install a cross
-# toolchain (brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu); it is
-# picked up automatically. Override with `make CROSS=<prefix>`.
+# The kernel is Rust and needs rustup: rust/rust-toolchain.toml selects a
+# nightly toolchain, which rustup downloads on the first build. The boot
+# code is assembled with NASM, and the kernel is linked by GNU ld into a
+# freestanding x86-64 ELF. On Linux the system binutils work. On macOS
+# install the cross binutils (brew install nasm x86_64-elf-binutils qemu
+# rustup); they are picked up automatically. Override with
+# `make CROSS=<prefix>`.
 ifeq ($(shell uname -s),Darwin)
 CROSS ?= x86_64-elf-
 else
 CROSS ?=
 endif
 
-CC      := $(CROSS)gcc
 AS      := nasm
 LD      := $(CROSS)ld
 OBJCOPY := $(CROSS)objcopy
@@ -21,36 +20,25 @@ QEMU    ?= qemu-system-x86_64
 GRUB_MKRESCUE ?= grub-mkrescue
 
 # Fail early with a hint instead of a confusing compiler error.
-REQUIRED := $(CC) $(LD) $(OBJCOPY) $(AS) cargo
+REQUIRED := $(LD) $(OBJCOPY) $(AS) cargo
 MISSING  := $(strip $(foreach t,$(REQUIRED),$(if $(shell command -v $(t) 2>/dev/null),,$(t))))
 ifneq ($(MISSING),)
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 ifeq ($(shell uname -s),Darwin)
-$(error Missing tools: $(MISSING). Install them with: brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu rustup (then: rustup-init))
+$(error Missing tools: $(MISSING). Install them with: brew install nasm x86_64-elf-binutils qemu rustup (then: rustup-init))
 else
-$(error Missing tools: $(MISSING). Install gcc, binutils, nasm and Rust (https://rustup.rs))
+$(error Missing tools: $(MISSING). Install binutils, nasm and Rust (https://rustup.rs))
 endif
 endif
 endif
 
 BUILD := build
-GCCINC := $(shell $(CC) -print-file-name=include)
-
-CFLAGS := -std=gnu11 -O2 -g -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
-          -mno-red-zone -mcmodel=small -msse2 -fno-asynchronous-unwind-tables \
-          -fno-tree-loop-distribute-patterns -fno-strict-aliasing \
-          -nostdinc -isystem $(GCCINC) -isystem lib/include -D_LIBC_LIMITS_H_
-WARN   := -Wall -Wextra
-
-SRCS := $(wildcard kernel/*.c lib/*.c)
-# The Rust part of the kernel: rust/ (agent, HTTP, JSON, Lua bindings) and
-# third_party/remedy-lua (the Lua interpreter), built by cargo into one
-# static library.
+# The kernel: rust/ and third_party/remedy-lua (the Lua interpreter), built
+# by cargo into one static library, plus the boot code.
 RUSTLIB := rust/target/x86_64-tomos/release/libtomos_rt.a
 RUST_SRCS := $(shell find rust/src third_party/remedy-lua/src -type f) rust/Cargo.toml \
              rust/x86_64-tomos.json rust/assets/font_ja.bin third_party/remedy-lua/Cargo.toml
-OBJS := $(BUILD)/arch/x86_64/boot.o \
-        $(SRCS:%.c=$(BUILD)/%.o)
+OBJS := $(BUILD)/arch/x86_64/boot.o
 
 KERNEL := $(BUILD)/tomos.elf
 
@@ -100,10 +88,6 @@ $(KERNEL): $(OBJS) $(RUSTLIB) linker.ld
 $(BUILD)/arch/x86_64/boot.o: arch/x86_64/boot.asm
 	@mkdir -p $(dir $@)
 	$(AS) -f elf64 $< -o $@
-
-$(BUILD)/%.o: %.c kernel/tomos.h
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(WARN) -c $< -o $@
 
 # Text mode: the serial console in this terminal. Ctrl-C goes to tom-os;
 # quit QEMU with Ctrl-A X.

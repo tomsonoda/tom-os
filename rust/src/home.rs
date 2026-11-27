@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 
 use crate::gfx::{Surface, font_wide, utf8_decode};
 use crate::rt::KCell;
-use crate::{console, sys};
+use crate::{console, sched};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -539,7 +539,7 @@ pub fn feed(bytes: &[u8]) {
 
 /// Shows a line the user sent, if the calling thread writes to the view.
 pub fn add_user_line(line: &[u8]) {
-    if console::has_home(unsafe { sys::thread_tty() }) {
+    if console::has_home(sched::tty()) {
         with(|v| v.add_user(line));
     }
 }

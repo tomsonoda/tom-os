@@ -12,13 +12,12 @@ use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::arch::asm;
-use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gfx::{font_wide, utf8_decode};
 use crate::pci::{inb, outb};
 use crate::rt::KCell;
-use crate::{home, sys, wm};
+use crate::{cpu, home, sched, wm};
 
 const COM1: u16 = 0x3F8;
 
@@ -414,7 +413,7 @@ impl Console {
 static CONSOLE: KCell<Console> = KCell::new(Console { ttys: Vec::new(), next_id: SHELL_TTY });
 
 fn current() -> TtyId {
-    unsafe { sys::thread_tty() }
+    sched::tty()
 }
 
 fn new_tty(c: &mut Console, term: Option<Term>, serial: bool) -> TtyId {
@@ -435,7 +434,7 @@ pub fn init() {
         }
         new_tty(c, term, true);
     });
-    unsafe { sys::thread_set_tty(SHELL_TTY) };
+    sched::set_tty(SHELL_TTY);
 }
 
 /// A tty with its own terminal buffer, for a window.
@@ -809,7 +808,7 @@ pub fn clear_break() {
 /// Ctrl-C or when the thread is being stopped, KEY_TIMEOUT when time is up.
 pub fn getc(timeout_ms: i32) -> i32 {
     let id = current();
-    let deadline = unsafe { sys::time_ms() } + timeout_ms.max(0) as u64;
+    let deadline = cpu::time_ms() + timeout_ms.max(0) as u64;
     loop {
         let got = CONSOLE.with(|c| {
             let Some(t) = c.tty(id) else { return Some(KEY_BREAK) };
@@ -820,14 +819,14 @@ pub fn getc(timeout_ms: i32) -> i32 {
         });
         match got {
             Some(KEY_BREAK) => return KEY_BREAK,
-            _ if unsafe { sys::thread_killed() } != 0 => return KEY_BREAK,
+            _ if sched::killed() => return KEY_BREAK,
             Some(b) => return b,
             None => {}
         }
-        if timeout_ms >= 0 && unsafe { sys::time_ms() } >= deadline {
+        if timeout_ms >= 0 && cpu::time_ms() >= deadline {
             return KEY_TIMEOUT;
         }
-        unsafe { sys::cpu_idle() };
+        sched::idle();
     }
 }
 
@@ -1092,7 +1091,7 @@ impl Editor {
                 // say why, briefly
                 let why = result.err().unwrap_or_else(|| "no conversion".into());
                 self.draw(alloc::format!(" ({why})").as_bytes());
-                unsafe { sys::sleep_ms(1200) };
+                cpu::sleep_ms(1200);
             }
         }
         self.draw(b"");
@@ -1310,31 +1309,11 @@ pub fn readline(max: usize, use_history: bool) -> Option<Vec<u8>> {
     result
 }
 
-// ------------------------------------------------------------ C interface
-// For the scheduler, the CPU exception handler and printf, which are
-// still C.
-
-/// # Safety
-/// `s` must point to `n` bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn console_write(s: *const c_char, n: usize) {
-    if n > 0 {
-        write(unsafe { core::slice::from_raw_parts(s as *const u8, n) });
-    }
-}
-
-/// Ends any capture, so that what follows is seen (the arguments are what
-/// the C interface used to take and are ignored).
-#[unsafe(no_mangle)]
-pub extern "C" fn console_capture(_buf: *mut c_void, _limit: usize) {
+/// Ends any capture, so that what follows is seen (for fatal errors).
+pub fn capture_off() {
     CONSOLE.try_with(|c| {
         for t in &mut c.ttys {
             t.capture = None;
         }
     });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn console_poll_input() {
-    poll_input();
 }

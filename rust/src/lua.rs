@@ -11,17 +11,16 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ffi::c_char;
 use core::time::Duration;
 
 use remedy_lua::{Error, Interrupt, IoError, Libs, LimitKind, Limits, Lua, ModuleSource, Stream, Value};
 
-use crate::fs;
+use crate::sound::{self, Wave};
+use crate::{cpu, fs};
 use crate::run::{self, Key, Line};
 use crate::gfx::Surface;
 use crate::wm::{self, GfxError};
-use crate::rt::{console, cstr};
-use crate::sys;
+use crate::rt::console;
 
 // -------------------------------------------------------------- arguments
 
@@ -324,7 +323,7 @@ fn register_tomos(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
             Line::Text(text) => Ok(vec![lua.create_string(text)?]),
         }
     })?;
-    lua.register("tomos.time_ms", |_, _| Ok(vec![Value::Int(unsafe { sys::time_ms() } as i64)]))?;
+    lua.register("tomos.time_ms", |_, _| Ok(vec![Value::Int(cpu::time_ms() as i64)]))?;
     lua.register("tomos.files", |lua, _| {
         let t = lua.create_table()?;
         for (n, (name, _)) in fs::list().into_iter().enumerate() {
@@ -446,19 +445,20 @@ fn register_gfx(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     Ok(())
 }
 
-const WAVES: [&str; 5] = ["square", "sine", "triangle", "saw", "noise"];
+const WAVES: [(&str, Wave); 5] =
+    [("square", Wave::Square), ("sine", Wave::Sine), ("triangle", Wave::Triangle), ("saw", Wave::Saw), ("noise", Wave::Noise)];
 
-fn wave_named(lua: &Lua, v: Value, i: usize) -> Result<i32, Error> {
+fn wave_named(lua: &Lua, v: Value, i: usize) -> Result<Wave, Error> {
     let name = lua.to_string_lossy(v).unwrap_or_default();
-    WAVES.iter().position(|w| *w == name).map(|p| p as i32).ok_or_else(|| {
+    WAVES.iter().find(|w| w.0 == name).map(|w| w.1).ok_or_else(|| {
         Error::runtime(format!("bad argument #{} (invalid wave '{}': square, sine, triangle, saw or noise)", i + 1, name))
     })
 }
 
 /// Optional sound arguments from index `i`: (wave, volume) or a table
 /// {wave=, volume=, delay=}. Returns (wave, volume, delay_ms).
-fn sound_opts(lua: &mut Lua, a: &[Value], i: usize) -> Result<(i32, f64, i32), Error> {
-    let (mut wave, mut vol, mut delay) = (0, 0.5, 0);
+fn sound_opts(lua: &mut Lua, a: &[Value], i: usize) -> Result<(Wave, f64, i32), Error> {
+    let (mut wave, mut vol, mut delay) = (Wave::Square, 0.5, 0);
     if let Some(t @ Value::Table(_)) = a.get(i) {
         let key = |lua: &mut Lua, k: &str| -> Result<Value, Error> {
             let k = lua.create_string(k)?;
@@ -484,11 +484,11 @@ fn sound_opts(lua: &mut Lua, a: &[Value], i: usize) -> Result<(i32, f64, i32), E
 }
 
 fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
-    lua.register("sound.available", |_, _| Ok(vec![Value::Bool(unsafe { sys::sound_available() } != 0)]))?;
+    lua.register("sound.available", |_, _| Ok(vec![Value::Bool(sound::available())]))?;
     lua.register("sound.tone", |lua, a| {
         let (freq, ms) = (num(lua, a, 0)?, int(lua, a, 1)?);
         let (wave, vol, delay) = sound_opts(lua, a, 2)?;
-        let ok = unsafe { sys::sound_tone(freq, ms, vol, wave, delay, run::owner()) } == 0;
+        let ok = sound::tone(freq, ms, vol, wave, delay, run::owner());
         Ok(vec![Value::Bool(ok)])
     })?;
     lua.register("sound.note", |lua, a| {
@@ -497,12 +497,11 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
         let (wave, vol, _) = sound_opts(lua, a, 2)?;
         let mut spec = name;
         spec.extend_from_slice(format!(":{ms}").as_bytes());
-        let c = cstr(&spec);
-        unsafe { sys::sound_melody(c.as_ptr() as *const c_char, ms, vol, wave, run::owner()) };
+        sound::melody(&spec, ms, vol, wave, run::owner());
         Ok(vec![])
     })?;
     lua.register("sound.melody", |lua, a| {
-        let notes = cstr(&bytes(lua, a, 0)?);
+        let notes = bytes(lua, a, 0)?;
         let mut len = 200;
         let (wave, vol, _) = if let Some(t @ Value::Table(_)) = a.get(1) {
             let k = lua.create_string("length")?;
@@ -514,7 +513,7 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
             len = opt_int(lua, a, 1, 200)?;
             sound_opts(lua, a, 2)?
         };
-        let total = unsafe { sys::sound_melody(notes.as_ptr() as *const c_char, len, vol, wave, run::owner()) };
+        let total = sound::melody(&notes, len, vol, wave, run::owner());
         Ok(vec![Value::Int(total as i64)])
     })?;
     lua.register("sound.play", |lua, a| {
@@ -529,18 +528,18 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
         for i in 1..=n {
             samples.push(lua.table_get(*t, Value::Int(i as i64)).as_num().unwrap_or(0.0) as f32);
         }
-        let ok = unsafe { sys::sound_pcm(samples.as_ptr(), n, rate, vol, 0, run::owner()) } == 0;
+        let ok = sound::pcm(&samples, rate, vol, 0, run::owner());
         Ok(vec![Value::Bool(ok)])
     })?;
     lua.register("sound.beep", |_, _| {
-        unsafe { sys::sound_tone(880.0, 90, 0.4, 0, 0, run::owner()) };
+        sound::tone(880.0, 90, 0.4, Wave::Square, 0, run::owner());
         Ok(vec![])
     })?;
     lua.register("sound.stop", |_, _| {
-        unsafe { sys::sound_stop(run::owner()) };
+        sound::stop(run::owner());
         Ok(vec![])
     })?;
-    lua.register("sound.playing", |_, _| Ok(vec![Value::Bool(unsafe { sys::sound_busy(run::owner()) } != 0)]))?;
+    lua.register("sound.playing", |_, _| Ok(vec![Value::Bool(sound::busy(run::owner()))]))?;
     let i = intr.clone();
     lua.register("sound.wait", move |_, _| {
         if run::sound_wait() {
@@ -562,7 +561,7 @@ fn setup(lua: &mut Lua) -> Result<(), Error> {
         if run::poll() {
             i.interrupt();
         }
-        Duration::from_millis(unsafe { sys::time_ms() })
+        Duration::from_millis(cpu::time_ms())
     });
     lua.set_time_limit(Some((clock, Duration::from_secs(1 << 40))));
 

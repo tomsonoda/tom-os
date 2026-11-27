@@ -17,12 +17,12 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::c_void;
 
 use crate::console::{self, TERM_CONT, TtyId};
 use crate::gfx::{self, Surface, font_wide};
 use crate::rt::{KCell, lossy};
-use crate::{home, sys};
+use crate::sched::{self, ThreadId};
+use crate::{cpu, home};
 
 const MAX_WINDOWS: usize = 12;
 const CELL_W: i32 = 8;
@@ -129,8 +129,8 @@ struct Window {
     /// false: shows the tty's terminal, true: shows the canvas
     canvas: bool,
     tty: TtyId,
-    /// the thread killed when the window is closed; null = not closable
-    owner: *mut c_void,
+    /// the thread stopped when the window is closed; 0 = not closable
+    owner: ThreadId,
     /// keys currently held (scancode, +0x80 for extended)
     keys: [bool; 256],
     /// mouse position inside the content, buttons
@@ -261,12 +261,12 @@ static WM: KCell<Wm> = KCell::new(Wm {
 });
 
 fn now() -> u64 {
-    unsafe { sys::time_ms() }
+    cpu::time_ms()
 }
 
-fn kill(owner: *mut c_void) {
-    if !owner.is_null() {
-        unsafe { sys::thread_kill(owner) };
+fn kill(owner: ThreadId) {
+    if owner != 0 {
+        sched::kill(owner);
     }
 }
 
@@ -518,7 +518,7 @@ impl Wm {
         }
     }
 
-    fn create(&mut self, title: &[u8], tty: TtyId, owner: *mut c_void) -> Option<Id> {
+    fn create(&mut self, title: &[u8], tty: TtyId, owner: ThreadId) -> Option<Id> {
         if !self.active || self.windows.len() >= MAX_WINDOWS {
             return None;
         }
@@ -741,7 +741,7 @@ impl Wm {
         let bar = if self.focused() == Some(w.id) { COL_TITLE_ON } else { COL_TITLE_OFF };
         s.fill(w.x, w.y - TITLE_H, w.w, TITLE_H - 1, bar);
         s.text(w.x + 6, w.y - TITLE_H + 2, title_fitting(&w.title, w.w - 30), COL_TITLE_TEXT, None, 1);
-        if !w.owner.is_null() {
+        if w.owner != 0 {
             s.fill(Self::close_box_x(w), w.y - TITLE_H + 2, 15, 15, COL_CLOSE);
             s.glyph(Self::close_box_x(w) + 4, w.y - TITLE_H + 1, b'x', COL_TITLE_TEXT, None, 1);
         }
@@ -805,7 +805,7 @@ impl Wm {
         } else if !self.overview && napps > 0 {
             text_at(s, 8, 4, &format!("{napps} app{} running", if napps == 1 { "" } else { "s" }), COL_BAR_DIM);
         }
-        let t = unsafe { sys::rtc_unix_time() };
+        let t = cpu::unix_time();
         text_at(s, self.sw - ARROW_W - 48, 4, &format!("{:02}:{:02}", t / 3600 % 24, t / 60 % 60), COL_BAR_DIM);
         self.draw_ime(s, self.sw - ARROW_W - 84, 3);
     }
@@ -889,7 +889,7 @@ impl Wm {
     fn on_close_box(&self, i: i32, x: i32, y: i32) -> bool {
         let (cw, _, _, cy) = self.card_geometry();
         let cx = self.card_x(i);
-        let closable = self.app_at(i).and_then(|id| self.win(id)).is_some_and(|w| !w.owner.is_null());
+        let closable = self.app_at(i).and_then(|id| self.win(id)).is_some_and(|w| w.owner != 0);
         closable && x >= cx + cw - 20 && x < cx + cw && y >= cy - 22 && y < cy - 2
     }
 
@@ -904,7 +904,7 @@ impl Wm {
                 continue;
             }
             s.text(cx, y - 20, title_fitting(&w.title, cw - 24), COL_BAR_TEXT, None, 1);
-            if !w.owner.is_null() {
+            if w.owner != 0 {
                 s.fill(cx + cw - 18, y - 20, 16, 16, COL_CLOSE);
                 s.glyph(cx + cw - 14, y - 20, b'x', COL_TITLE_TEXT, None, 1);
             }
@@ -1015,7 +1015,7 @@ impl Wm {
         }
         if self.layout == LAYOUT_FULL {
             self.step_anim();
-            let minute = (unsafe { sys::rtc_unix_time() } / 60) as i64;
+            let minute = (cpu::unix_time() / 60) as i64;
             if minute != self.last_minute {
                 self.last_minute = minute;
                 self.damage(0, 0, self.sw, STATUS_H);
@@ -1131,7 +1131,7 @@ impl Wm {
 
     fn key(&mut self, code: i32, down: bool, alt: bool, chars: Option<&[u8]>) {
         let Some(f) = self.focused() else { return };
-        let owner = |wm: &Wm, id: Option<Id>| id.and_then(|id| wm.win(id)).map_or(core::ptr::null_mut(), |w| w.owner);
+        let owner = |wm: &Wm, id: Option<Id>| id.and_then(|id| wm.win(id)).map_or(0, |w| w.owner);
         if self.layout == LAYOUT_FULL && self.overview {
             if !down {
                 return;
@@ -1237,7 +1237,7 @@ impl Wm {
             if let Some((id, x, y, close_x, owner)) = hit.map(|w| (w.id, w.x, w.y, Self::close_box_x(w), w.owner)) {
                 self.raise(id);
                 if my < y {
-                    if !owner.is_null() && mx >= close_x {
+                    if owner != 0 && mx >= close_x {
                         kill(owner);
                     } else {
                         self.drag = Some(id);
@@ -1284,10 +1284,10 @@ impl Wm {
         self.ov_pressed = false;
         let card = core::mem::replace(&mut self.ov_press_card, -1);
         let app = self.app_at(card);
-        let owner = app.and_then(|id| self.win(id)).map_or(core::ptr::null_mut(), |w| w.owner);
+        let owner = app.and_then(|id| self.win(id)).map_or(0, |w| w.owner);
         if card == -2 {
             self.leave_overview(self.home);
-        } else if self.ov_lift < -ch / 3 && !owner.is_null() {
+        } else if self.ov_lift < -ch / 3 && owner != 0 {
             kill(owner); // flicked up: close it
         } else if self.ov_dragging {
             let half = (cw + gap) / 2;
@@ -1484,8 +1484,8 @@ pub fn set_display(w: i32, h: i32, scale: i32) -> Result<(), String> {
 }
 
 /// A window showing the terminal of `tty`. `owner` is the thread that is
-/// stopped when the window is closed (null: the window cannot be closed).
-pub fn create(title: &[u8], tty: TtyId, owner: *mut c_void) -> Option<Id> {
+/// stopped when the window is closed (0: the window cannot be closed).
+pub fn create(title: &[u8], tty: TtyId, owner: ThreadId) -> Option<Id> {
     WM.with(|wm| wm.create(title, tty, owner))
 }
 
@@ -1493,7 +1493,7 @@ pub fn destroy(id: Id) {
     WM.with(|wm| wm.destroy(id))
 }
 
-pub fn set_owner(id: Id, owner: *mut c_void) {
+pub fn set_owner(id: Id, owner: ThreadId) {
     WM.with(|wm| {
         if let Some(w) = wm.win_mut(id) {
             w.owner = owner;
@@ -1525,8 +1525,8 @@ pub enum GfxError {
 
 /// The calling thread's window, if it is an app's.
 fn app_window(wm: &mut Wm) -> Result<&mut Window, GfxError> {
-    let id = unsafe { sys::thread_window() } as Id;
-    wm.win_mut(id).filter(|w| !w.owner.is_null()).ok_or(GfxError::Unavailable)
+    let id = sched::window();
+    wm.win_mut(id).filter(|w| w.owner != 0).ok_or(GfxError::Unavailable)
 }
 
 /// Gives the app a canvas (the whole usable area if `size` is None) and
@@ -1578,7 +1578,7 @@ pub fn app_flip(fps: f64) -> Result<bool, GfxError> {
         if crate::run::stopped().is_some() {
             return Ok(true);
         }
-        unsafe { sys::cpu_idle() };
+        sched::idle();
         if now() - last_flip() >= frame {
             break;
         }
@@ -1683,15 +1683,9 @@ pub fn ime_changed() {
     WM.with(Wm::ime_changed)
 }
 
-// ------------------------------------------------------------ C interface
-// For the scheduler, which is still C.
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_active() -> i32 {
-    active() as i32
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_tick() {
-    WM.try_with(Wm::tick);
+/// Called from the scheduler's tick: redraws what changed.
+pub fn tick() {
+    if active() {
+        WM.try_with(Wm::tick);
+    }
 }

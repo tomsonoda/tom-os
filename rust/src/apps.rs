@@ -7,11 +7,11 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
-use core::ffi::c_void;
 
 use crate::console::{self, TtyId};
 use crate::rt::{KCell, lossy};
-use crate::{fs, kprint, run, sys, wm};
+use crate::sched::{self, ThreadId};
+use crate::{cpu, fs, kprint, run, wm};
 
 const MAX_APPS: usize = 10;
 
@@ -36,7 +36,7 @@ struct App {
 struct Running {
     id: i32,
     path: String,
-    thread: *mut c_void,
+    thread: ThreadId,
     outcome: Rc<Outcome>,
 }
 
@@ -63,10 +63,9 @@ fn run_app(path: &[u8], code: &[u8]) -> Result<(), String> {
     run::lua_run(&lossy(path), code, true, 0).0
 }
 
-extern "C" fn app_main(arg: *mut c_void) {
-    // SAFETY: `arg` is the Box that launch_windowed handed to this thread
-    let app = unsafe { Box::from_raw(arg as *mut App) };
-    unsafe { sys::thread_set_window(app.window) }; // the scheduler keeps the id for the Lua gfx library
+/// The app's thread.
+fn app_main(app: App) {
+    sched::set_window(app.window); // the scheduler keeps the id for the Lua gfx library
     let result = run_app(&app.path, &app.code);
     app.outcome.failed.set(result.is_err());
     if let Err(e) = &result {
@@ -74,7 +73,7 @@ extern "C" fn app_main(arg: *mut c_void) {
     }
     app.outcome.done.set(true);
 
-    if unsafe { sys::thread_killed() } == 0 {
+    if !sched::killed() {
         let graphical = wm::is_canvas(app.window);
         if result.is_err() || !graphical {
             // keep the window so the output or the error can be read
@@ -101,7 +100,7 @@ fn launch_windowed(path: Vec<u8>, code: Vec<u8>) -> Result<Started, String> {
     }
     let failed = || Err(String::from("could not start the app (out of memory or too many windows)"));
     let Some(tty) = console::tty_create(80, 25) else { return failed() };
-    let Some(window) = wm::create(&path, tty, core::ptr::null_mut()) else {
+    let Some(window) = wm::create(&path, tty, 0) else {
         console::tty_destroy(tty);
         return failed();
     };
@@ -111,22 +110,19 @@ fn launch_windowed(path: Vec<u8>, code: Vec<u8>) -> Result<Started, String> {
     });
     let outcome = Rc::new(Outcome::default());
     let shown = lossy(&path);
-    let app = Box::into_raw(Box::new(App { id, path, code, tty, window, outcome: outcome.clone() }));
-    let thread = unsafe { sys::thread_spawn(app_main, app as *mut c_void, tty) };
-    if thread.is_null() {
-        // SAFETY: the thread was not created, so the Box is still ours
-        drop(unsafe { Box::from_raw(app) });
+    let app = App { id, path, code, tty, window, outcome: outcome.clone() };
+    let Some(thread) = sched::spawn(Box::new(move || app_main(app)), tty) else {
         wm::destroy(window);
         console::tty_destroy(tty);
         return failed();
-    }
+    };
     wm::set_owner(window, thread); // closing the window stops the app
     RUNNING.with(|r| r.push(Running { id, path: shown, thread, outcome: outcome.clone() }));
 
     // Give it a moment so start-up errors can be reported to the caller.
-    let until = unsafe { sys::time_ms() } + 2500;
-    while !outcome.done.get() && unsafe { sys::time_ms() } < until {
-        unsafe { sys::cpu_idle() };
+    let until = cpu::time_ms() + 2500;
+    while !outcome.done.get() && cpu::time_ms() < until {
+        sched::idle();
     }
     if !outcome.done.get() {
         Ok(Started::Running)
@@ -169,7 +165,7 @@ pub fn list() {
 pub fn kill(id: i32) -> bool {
     let thread = RUNNING.with(|r| r.iter().find(|a| a.id == id).map(|a| a.thread));
     if let Some(t) = thread {
-        unsafe { sys::thread_kill(t) };
+        sched::kill(t);
     }
     thread.is_some()
 }

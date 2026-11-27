@@ -35,8 +35,7 @@ fn address(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
 }
 
 /// Reads a 32-bit register of a PCI device's configuration space.
-#[unsafe(no_mangle)]
-pub extern "C" fn pci_read(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
+pub fn pci_read(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
     // SAFETY: 0xCF8/0xCFC are the PCI configuration ports; reading is harmless
     unsafe {
         outl(0xCF8, address(bus, dev, func, off));
@@ -44,10 +43,9 @@ pub extern "C" fn pci_read(bus: u8, dev: u8, func: u8, off: u8) -> u32 {
     }
 }
 
-/// Writes a configuration register. Kept as it was for C: drivers use it to
-/// switch on their own device.
-#[unsafe(no_mangle)]
-pub extern "C" fn pci_write(bus: u8, dev: u8, func: u8, off: u8, v: u32) {
+/// Writes a configuration register: drivers use it to switch on their
+/// own device.
+pub fn pci_write(bus: u8, dev: u8, func: u8, off: u8, v: u32) {
     unsafe {
         outl(0xCF8, address(bus, dev, func, off));
         outl(0xCFC, v);

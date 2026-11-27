@@ -1,4 +1,4 @@
-# The kernel target: bare-metal x86-64 with SSE2 (floats, like the C side)
+# The kernel target: bare-metal x86-64 with SSE2 (for floating point)
 # and no red zone. core and alloc are compiled for it from source.
 [build]
 target = "x86_64-tomos.json"
@@ -6,3 +6,5 @@ target = "x86_64-tomos.json"
 [unstable]
 build-std = ["core", "alloc"]
 json-target-spec = true
+# memcpy and friends come from compiler_builtins: there is no C library
+build-std-features = ["compiler-builtins-mem"]

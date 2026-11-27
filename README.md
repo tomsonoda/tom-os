@@ -12,9 +12,7 @@ tom-os> make a number guessing game
 Guess a number from 1 to 100: _
 ```
 
-tom-os does not use Linux or any other existing kernel. Boot code, console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in C and Rust with a NASM boot stub. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 1.9 MiB and boots instantly.
-
-The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, the window manager, the home screen's chat view, 2D drawing and fonts, the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access), terminals, the keyboard and mouse, the line editor and Japanese input, and start-up. Still C: the scheduler, interrupts and time, the sound driver, memory management and the small C library under them.
+tom-os does not use Linux or any other existing kernel. Console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in Rust; only the boot code and the thread switch (about 200 lines, `arch/x86_64/boot.asm`) are assembly. There is no C. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 2 MiB and boots instantly.
 
 The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but goes in a different direction. llm.asm is a chat REPL that runs model inference inside the kernel. tom-os starts with an agent that can use tools and a way to run the apps it creates.
 
@@ -37,9 +35,10 @@ First milestone. Runs on x86-64 under QEMU.
 
 ## Requirements
 
-- `gcc`, `nasm`, `binutils`, `make` (Linux), or on macOS a cross toolchain:
-  `brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu`
 - Rust through [rustup](https://rustup.rs) (on macOS: `brew install rustup`, then `rustup-init`). The build uses the nightly toolchain named in `rust/rust-toolchain.toml`; rustup downloads it on the first `make`.
+- `nasm`, `binutils` (the GNU linker) and `make` (Linux), or on macOS:
+  `brew install nasm x86_64-elf-binutils qemu`
+- No C compiler is needed.
 - `qemu-system-x86_64`
 - Python 3 (for the tests and the host-side gateways)
 
@@ -238,10 +237,10 @@ The steps in this section are based on testing with QEMU on Linux. They have not
 
 ### Build and run from source
 
-Apple's compiler cannot produce the kernel, so install a cross toolchain. The Makefile uses it automatically on macOS.
+The kernel is linked with the GNU linker, which macOS does not have, so install the cross binutils. The Makefile uses them automatically on macOS.
 
 ```sh
-brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu rustup
+brew install nasm x86_64-elf-binutils qemu rustup
 rustup-init    # once; accept the defaults, then open a new terminal
 make
 make test      # optional
@@ -325,16 +324,15 @@ python3 tools/claude_gateway.py
 |            fonts, 2D drawing  |                                   |
 +-------------------------------+----------------------------------+
 | rust/src/console.rs  terminals, serial, PS/2 keyboard and mouse,  |
-|          line editor, Japanese input     start.rs  start-up       |
-| kernel/  sched (cooperative threads)  mem (heap)                  |
-|          cpu (IDT, PIC, timer, RTC)                               |
-|          ac97 (sound card, synthesizer)                           |
-| lib/     minimal libc, printf with floating point, libm (x87)     |
-| rust/src/json.rs  JSON                                            |
+|          line editor, Japanese input                              |
+|   sched.rs  cooperative threads      mem.rs  heap, boot info      |
+|   cpu.rs    interrupts, timer, clock sound.rs  AC'97, synthesizer |
+|   json.rs   JSON                     start.rs  start-up           |
 | arch/x86_64/boot.asm  Multiboot1 -> long mode, thread switch      |
 +------------------------------------------------------------------+
 ```
 
+- Memory safety: the kernel is Rust, and `unsafe` is confined to the modules that touch hardware or raw memory: port I/O (`pci.rs`), the heap allocator and boot information (`mem.rs`), the interrupt table (`cpu.rs`), the thread switch (`sched.rs`), the keyboard, mouse and text screen (`console.rs`), the device rings and buffers of the network and sound cards (`virtio_net.rs`, `sound.rs`) and the framebuffer (`gfx.rs`), plus start-up and the cell that holds kernel state (`start.rs`, `rt.rs`). The agent, the shell, HTTP, JSON, TCP/IP, the file system, the window manager, the home screen, app management and the Lua bindings contain no `unsafe` at all. Windows, terminals and threads are named by ids that are never reused, so code that holds a stale one finds nothing instead of touching freed memory.
 - The home screen's chat view (`rust/src/home.rs`) reads the shell's ordinary output. Private escape sequences, which terminals ignore, mark what each piece of text is (an answer, a step, an error, the waiting indicator, or something to leave out), so the serial console and the windows layout still show the plain text.
 - Single address space. Threads are cooperative: an app gives up the CPU whenever it waits for input, sleeps or shows a frame, and the Lua runtime also yields every few thousand instructions, so a busy app cannot freeze the others.
 - All devices are polled; interrupts are only used to wake the CPU from `HLT`, so the system does not spin while idle.

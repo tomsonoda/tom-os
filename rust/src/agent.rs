@@ -4,13 +4,12 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::c_char;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::json::{self, Json};
-use crate::rt::{KCell, console, cstr, lossy, ui};
+use crate::rt::{KCell, console, lossy, ui};
 use crate::apps::{self, Started};
-use crate::{fs, http, kprint, net, run, sys, tcp, wm};
+use crate::{cpu, fs, http, kprint, mem, net, run, tcp, wm};
 
 const MAX_STEPS: usize = 24;
 const TOOL_RESULT_MAX: usize = 12000;
@@ -55,13 +54,7 @@ static SETTINGS: KCell<Option<[Vec<u8>; 3]>> = KCell::new(None);
 fn with_settings<R>(f: impl FnOnce(&mut [Vec<u8>; 3]) -> R) -> R {
     SETTINGS.with(|s| {
         f(s.get_or_insert_with(|| {
-            DEFAULTS.map(|(key, default)| {
-                let mut v = [0u8; 128];
-                let key = cstr(key.as_bytes());
-                unsafe { sys::cmdline_get(key.as_ptr() as *const c_char, v.as_mut_ptr(), v.len()) };
-                let end = v.iter().position(|&b| b == 0).unwrap_or(v.len());
-                if end > 0 { v[..end].to_vec() } else { default.as_bytes().to_vec() }
-            })
+            DEFAULTS.map(|(key, default)| mem::arg(key).filter(|v| !v.is_empty()).map_or(default.as_bytes().to_vec(), String::into_bytes))
         }))
     })
 }
@@ -367,7 +360,7 @@ fn show_waiting() {
         http::Phase::Receiving => "thinking, reply started",
         other => other.text(),
     };
-    let secs = (unsafe { sys::time_ms() } - WAIT_START.load(Ordering::Relaxed)) / 1000;
+    let secs = (cpu::time_ms() - WAIT_START.load(Ordering::Relaxed)) / 1000;
     kprint!("{}\r\x1b[2m({what}... {secs} s, Ctrl-C to cancel)\x1b[0m\x1b[K{}", ui::STATUS, ui::END);
 }
 
@@ -377,7 +370,7 @@ fn run_turn(conv: &mut Vec<Message>, user_text: &[u8]) {
     crate::console::clear_break();
 
     for _ in 0..MAX_STEPS {
-        WAIT_START.store(unsafe { sys::time_ms() }, Ordering::Relaxed);
+        WAIT_START.store(cpu::time_ms(), Ordering::Relaxed);
         http::reset_phase();
         show_waiting();
         tcp::set_wait_hook(Some(show_waiting));

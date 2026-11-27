@@ -8,7 +8,7 @@
 use alloc::vec::Vec;
 
 use crate::rt::KCell;
-use crate::sys;
+use crate::{cpu, mem, sched};
 use crate::tcp::Tcp;
 use crate::virtio_net::Nic;
 
@@ -40,12 +40,12 @@ impl NetError {
 }
 
 pub fn now() -> u64 {
-    unsafe { sys::time_ms() }
+    cpu::time_ms()
 }
 
 /// The caller is waiting: lets other threads run (they poll the network).
 pub fn idle() {
-    unsafe { sys::cpu_idle() }
+    sched::idle()
 }
 
 pub fn get16(p: &[u8]) -> u16 {
@@ -306,21 +306,13 @@ pub fn resolve(dst: u32) -> Result<(), NetError> {
     if known() { Ok(()) } else { Err(NetError::Timeout) }
 }
 
-// ------------------------------------------------------------ C interface
-
 /// Sets the addresses (QEMU user-mode networking by default; ip= gw= mask=
 /// on the kernel command line override them) and starts the network card.
-#[unsafe(no_mangle)]
-pub extern "C" fn net_init() {
-    let setting = |key: &core::ffi::CStr, default: u32| {
-        let mut v = [0u8; 32];
-        unsafe { sys::cmdline_get(key.as_ptr(), v.as_mut_ptr(), v.len()) };
-        let end = v.iter().position(|&b| b == 0).unwrap_or(v.len());
-        core::str::from_utf8(&v[..end]).ok().and_then(parse_ip).unwrap_or(default)
-    };
-    let ip = setting(c"ip", 0x0A00_020F); // 10.0.2.15
-    let gateway = setting(c"gw", 0x0A00_0202); // 10.0.2.2
-    let netmask = setting(c"mask", 0xFFFF_FF00);
+pub fn init() {
+    let setting = |key: &str, default: u32| mem::arg(key).and_then(|v| parse_ip(&v)).unwrap_or(default);
+    let ip = setting("ip", 0x0A00_020F); // 10.0.2.15
+    let gateway = setting("gw", 0x0A00_0202); // 10.0.2.2
+    let netmask = setting("mask", 0xFFFF_FF00);
     let nic = Nic::find();
     NET.with(|n| {
         (n.ip, n.gateway, n.netmask) = (ip, gateway, netmask);
@@ -329,14 +321,4 @@ pub extern "C" fn net_init() {
             n.nic = Some(nic);
         }
     });
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn net_up() -> i32 {
-    up() as i32
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn net_poll() {
-    poll();
 }

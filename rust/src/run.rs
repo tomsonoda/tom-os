@@ -1,14 +1,12 @@
 //! Running a Lua program on the calling thread: the state of the run (how
 //! it can be stopped) and what the Lua libraries need from the kernel.
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::cell::Cell;
-use core::ffi::c_void;
 
 use crate::console::{self, KEY_BREAK, KEY_TIMEOUT};
-use crate::{lua, sys};
+use crate::rt::KCell;
+use crate::{cpu, lua, mem, sched, sound};
 
 /// Why a run has to stop.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -21,35 +19,42 @@ pub enum Stop {
 }
 
 /// The state of one run. Several apps can run at once, each on its own
-/// thread, so the scheduler keeps a pointer to it for the thread. Its
-/// address also names the app's sounds.
+/// thread; the scheduler keeps the run's key for the thread. The key also
+/// names the app's sounds.
 struct Run {
+    key: usize,
     /// sticky
-    stop: Cell<Option<Stop>>,
+    stop: Option<Stop>,
     /// console input allowed
     interactive: bool,
     /// 0 = none
     deadline: u64,
 }
 
-/// The run on the calling thread.
-fn current<'a>() -> Option<&'a Run> {
-    // SAFETY: set by `lua_run`, which keeps the Run alive until it has
-    // cleared the pointer again, on this same thread
-    unsafe { (sys::thread_data() as *const Run).as_ref() }
+static RUNS: KCell<Vec<Run>> = KCell::new(Vec::new());
+static NEXT_KEY: KCell<usize> = KCell::new(1);
+
+/// Looks at the run on the calling thread, if there is one.
+fn with_run<R>(f: impl FnOnce(&mut Run) -> R) -> Option<R> {
+    let key = sched::data();
+    RUNS.with(|runs| runs.iter_mut().find(|r| r.key == key && key != 0).map(f))
 }
 
 /// Checks whether the run must stop; the answer is sticky.
 pub fn stopped() -> Option<Stop> {
-    let Some(run) = current() else { return Some(Stop::Break) };
-    if run.stop.get().is_none() {
-        if unsafe { sys::thread_killed() } != 0 || console::break_pending() {
-            run.stop.set(Some(Stop::Break));
-        } else if run.deadline != 0 && unsafe { sys::time_ms() } > run.deadline {
-            run.stop.set(Some(Stop::Timeout));
-        }
+    let Some((stop, deadline)) = with_run(|r| (r.stop, r.deadline)) else { return Some(Stop::Break) };
+    if stop.is_some() {
+        return stop;
     }
-    run.stop.get()
+    let stop = if sched::killed() || console::break_pending() {
+        Some(Stop::Break)
+    } else if deadline != 0 && cpu::time_ms() > deadline {
+        Some(Stop::Timeout)
+    } else {
+        None
+    };
+    with_run(|r| r.stop = stop);
+    stop
 }
 
 /// Called by the interpreter every few thousand steps; true if the run
@@ -58,40 +63,36 @@ pub fn poll() -> bool {
     if stopped().is_some() {
         return true;
     }
-    unsafe { sys::sched_yield() }; // share the CPU with other apps and the shell
+    sched::yield_now(); // share the CPU with other apps and the shell
     false
 }
 
 /// os.exit(): the run stops without an error.
 pub fn exit() {
-    if let Some(run) = current() {
-        run.stop.set(Some(Stop::Exit));
-    }
+    with_run(|r| r.stop = Some(Stop::Exit));
 }
 
 fn set_break() {
-    if let Some(run) = current() {
-        run.stop.set(Some(Stop::Break));
-    }
+    with_run(|r| r.stop = Some(Stop::Break));
 }
 
 fn interactive() -> bool {
-    current().is_some_and(|r| r.interactive)
+    with_run(|r| r.interactive) == Some(true)
 }
 
 /// What the sound driver knows this run's sounds by.
-pub fn owner() -> *mut c_void {
-    unsafe { sys::thread_data() }
+pub fn owner() -> usize {
+    sched::data()
 }
 
 /// Waits; true if the run was stopped meanwhile.
 pub fn sleep(ms: f64) -> bool {
-    let end = unsafe { sys::time_ms() } + ms.max(0.0) as u64;
-    while unsafe { sys::time_ms() } < end {
+    let end = cpu::time_ms() + ms.max(0.0) as u64;
+    while cpu::time_ms() < end {
         if stopped().is_some() {
             return true;
         }
-        unsafe { sys::cpu_idle() };
+        sched::idle();
     }
     false
 }
@@ -109,7 +110,7 @@ pub fn getkey(timeout_ms: i32) -> Key {
     if !interactive() {
         return Key::None;
     }
-    let now = || unsafe { sys::time_ms() };
+    let now = cpu::time_ms;
     let end = if timeout_ms < 0 { u64::MAX } else { now() + timeout_ms as u64 };
     let c = loop {
         // in slices, so a time limit or a closed window still applies
@@ -181,11 +182,11 @@ pub fn readline() -> Line {
 
 /// Waits until the run's sounds have played; true if the run was stopped.
 pub fn sound_wait() -> bool {
-    while unsafe { sys::sound_busy(owner()) } != 0 {
+    while sound::busy(owner()) {
         if stopped().is_some() {
             return true;
         }
-        unsafe { sys::cpu_idle() };
+        sched::idle();
     }
     false
 }
@@ -195,21 +196,23 @@ pub fn sound_wait() -> bool {
 /// Interactive runs use the console; the others have no keyboard and their
 /// output (up to 16 KiB) is returned. `timeout_ms` 0 means no time limit.
 pub fn lua_run(name: &str, code: &[u8], interactive: bool, timeout_ms: u64) -> (Result<(), String>, Vec<u8>) {
-    if current().is_some() {
+    if with_run(|_| ()).is_some() {
         return (Err(String::from("a Lua program is already running on this thread")), Vec::new());
     }
-    let now = unsafe { sys::time_ms() };
+    let now = cpu::time_ms();
     let deadline = if timeout_ms > 0 { now + timeout_ms } else { 0 };
-    let run = Box::new(Run { stop: Cell::new(None), interactive, deadline });
-    let key = &*run as *const Run as *mut c_void;
-    unsafe { sys::thread_set_data(key) };
+    let key = NEXT_KEY.with(|k| core::mem::replace(k, *k + 1));
+    RUNS.with(|runs| runs.push(Run { key, stop: None, interactive, deadline }));
+    sched::set_data(key);
     console::clear_break();
     if !interactive {
         console::capture_start(16384);
     }
 
-    let free = unsafe { sys::mem_total() - sys::mem_used() };
-    let result = match (lua::exec(name, code, free / 2), run.stop.get()) {
+    let free = mem::total() - mem::used();
+    let result = lua::exec(name, code, free / 2);
+    let stop = with_run(|r| r.stop).flatten();
+    let result = match (result, stop) {
         (Err(_), Some(Stop::Exit)) => Ok(()),
         (Err(_), Some(Stop::Timeout)) => Err(String::from("time limit exceeded")),
         (Err(_), Some(Stop::Break)) => Err(String::from("interrupted (Ctrl-C)")),
@@ -217,10 +220,11 @@ pub fn lua_run(name: &str, code: &[u8], interactive: bool, timeout_ms: u64) -> (
     };
     // Sounds may outlive a program that ends normally (a short jingle);
     // a stopped one is silenced.
-    if matches!(run.stop.get(), Some(Stop::Break | Stop::Timeout)) || unsafe { sys::thread_killed() } != 0 {
-        unsafe { sys::sound_stop(key) };
+    if matches!(stop, Some(Stop::Break | Stop::Timeout)) || sched::killed() {
+        sound::stop(key);
     }
     let output = if interactive { Vec::new() } else { console::capture_end() };
-    unsafe { sys::thread_set_data(core::ptr::null_mut()) };
+    sched::set_data(0);
+    RUNS.with(|runs| runs.retain(|r| r.key != key));
     (result, output)
 }
