@@ -294,6 +294,56 @@ static void mouse_cmd(u8 cmd) {
     ps2_read(); /* ACK */
 }
 
+/* VMware-compatible absolute pointer ("vmmouse"), provided by QEMU on PCs.
+ * It reports where the host cursor is, so the pointer needs no grabbing and
+ * never drifts from the host's cursor, also when QEMU zooms the picture. */
+#define VMPORT_MAGIC 0x564D5868u
+#define VMPORT_PORT 0x5658
+#define VMMOUSE_DATA 39
+#define VMMOUSE_STATUS 40
+#define VMMOUSE_COMMAND 41
+static int vmmouse_on;
+
+static void vmport(u32 cmd, u32 arg, u32 out[4]) {
+    u32 a = VMPORT_MAGIC, b = arg, c = cmd, d = VMPORT_PORT;
+    __asm__ volatile("inl %%dx, %%eax" : "+a"(a), "+b"(b), "+c"(c), "+d"(d) : : "memory");
+    out[0] = a;
+    out[1] = b;
+    out[2] = c;
+    out[3] = d;
+}
+
+static void vmmouse_init(void) {
+    u32 r[4];
+    vmport(10, 0, r); /* GETVERSION */
+    if (r[1] != VMPORT_MAGIC) return;
+    vmport(VMMOUSE_COMMAND, 0x45414552, r); /* READ_ID */
+    vmport(VMMOUSE_STATUS, 0, r);
+    if ((r[0] & 0xFFFF0000) == 0xFFFF0000 || (r[0] & 0xFFFF) == 0) return;
+    vmport(VMMOUSE_DATA, 1, r);
+    if (r[0] != 0x3442554a) return;
+    vmport(VMMOUSE_COMMAND, 0x53424152, r); /* REQUEST_ABSOLUTE */
+    vmmouse_on = 1;
+}
+
+int mouse_absolute(void) { return vmmouse_on; }
+
+static void vmmouse_poll(void) {
+    u32 r[4];
+    for (int guard = 0; guard < 64; guard++) {
+        vmport(VMMOUSE_STATUS, 0, r);
+        if ((r[0] & 0xFFFF0000) == 0xFFFF0000) { /* error: start over */
+            vmmouse_on = 0;
+            vmmouse_init();
+            return;
+        }
+        if ((r[0] & 0xFFFF) < 4) return;
+        vmport(VMMOUSE_DATA, 4, r);
+        int buttons = ((r[0] & 0x20) ? 1 : 0) | ((r[0] & 0x10) ? 2 : 0) | ((r[0] & 0x08) ? 4 : 0);
+        if (wm_active()) wm_mouse_abs((int)(r[1] & 0xFFFF), (int)(r[2] & 0xFFFF), buttons);
+    }
+}
+
 void mouse_init(void) {
     ps2_wait_write();
     outb(0x64, 0xA8); /* enable the auxiliary port */
@@ -307,6 +357,7 @@ void mouse_init(void) {
     outb(0x60, (u8)(cfg & ~0x20)); /* enable the mouse clock */
     mouse_cmd(0xF6);               /* defaults */
     mouse_cmd(0xF4);               /* start reporting */
+    vmmouse_init();
 }
 
 void console_poll_input(void) {
@@ -323,9 +374,12 @@ void console_poll_input(void) {
         u8 st = inb(0x64);
         if (!(st & 1)) break;
         u8 b = inb(0x60);
-        if (st & 0x20) mouse_byte(b);
-        else ps2_scancode(b);
+        if (st & 0x20) {
+            if (!vmmouse_on) mouse_byte(b); /* with vmmouse these are only wake-up packets */
+        } else
+            ps2_scancode(b);
     }
+    if (vmmouse_on) vmmouse_poll();
 }
 
 /* ----------------------------------------------------------------- input */

@@ -13,6 +13,7 @@ static void cmd_help(void) {
         "  /run <name>    start an app (Ctrl-C stops it)\n"
         "  /ps, /kill <id>  list and stop running apps (graphical mode)\n"
         "  /display <w>x<h> [scale]  change the screen size (graphical mode)\n"
+        "  /layout full|windows      one app at a time, or overlapping windows\n"
         "  /cat <path>    show a file\n"
         "  /rm <path>     delete a file\n"
         "  /lua <code>    run one line of Lua\n"
@@ -37,8 +38,9 @@ static void cmd_info(void) {
         kprintf("network: no device\n");
     }
     if (wm_active())
-        kprintf("display: graphical (windows), %dx%d, scale %d\n", wm_display_w(), wm_display_h(),
-                wm_scale());
+        kprintf("display: graphical (%s), %dx%d, scale %d, %s pointer\n",
+                wm_layout() == LAYOUT_FULL ? "full screen" : "windows", wm_display_w(), wm_display_h(),
+                wm_scale(), mouse_absolute() ? "absolute" : "relative");
     else
         kprintf("display: text\n");
     kprintf("llm    : http://%s%s  model=%s\n", agent_setting("llm"), agent_setting("path"),
@@ -83,6 +85,8 @@ static void command(char *line) {
         int r = *arg ? app_launch(arg, &err) : -2;
         if (r == -2) console_puts("usage: /run <name>\n");
         else if (r < 0) kprintf("[error] %s\n", sb_cstr(&err));
+        else if (r == 1 && wm_layout() == LAYOUT_FULL)
+            kprintf("%s is running full screen (drag the bottom bar to switch apps)\n", arg);
         else if (r == 1) kprintf("%s is running in its own window\n", arg);
         sb_free(&err);
     } else if (!strcmp(line, "/display")) {
@@ -109,6 +113,14 @@ static void command(char *line) {
             else kprintf("display: %dx%d, scale %d\n", wm_display_w(), wm_display_h(), wm_scale());
             sb_free(&err);
         }
+    } else if (!strcmp(line, "/layout")) {
+        if (!wm_active()) console_puts("/layout only works in graphical mode\n");
+        else if (!strcmp(arg, "full")) wm_set_layout(LAYOUT_FULL);
+        else if (!strcmp(arg, "windows")) wm_set_layout(LAYOUT_WINDOWS);
+        else
+            kprintf("layout: %s\nusage: /layout full      one app fills the screen (switch by dragging the bottom bar)\n"
+                    "       /layout windows   overlapping windows\n",
+                    wm_layout() == LAYOUT_FULL ? "full" : "windows");
     } else if (!strcmp(line, "/ps")) {
         app_list();
     } else if (!strcmp(line, "/kill")) {

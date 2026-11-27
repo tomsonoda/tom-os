@@ -15,7 +15,7 @@ PROMPT = "tom-os>"
 
 
 class VM:
-    def __init__(self, port, gui=False, monitor=None):
+    def __init__(self, port, gui=False, monitor=None, qmp=None, args=""):
         # TOMOS_ISO=<path> boots the CD image through GRUB instead of loading
         # the kernel directly; the LLM address is then set with /set.
         self.iso = os.environ.get("TOMOS_ISO")
@@ -23,8 +23,10 @@ class VM:
             boot = ["-cdrom", os.path.join(ROOT, self.iso), "-boot", "d"]
         else:
             boot = ["-kernel", os.path.join(ROOT, "build", "tomos.elf"),
-                    "-append", "llm=10.0.2.2:%d model=mock%s" % (port, "" if gui else " gui=0")]
+                    "-append", "llm=10.0.2.2:%d model=mock%s %s" % (port, "" if gui else " gui=0", args)]
         mon = ["-monitor", "unix:%s,server,nowait" % monitor] if monitor else ["-monitor", "none"]
+        if qmp:
+            mon += ["-qmp", "unix:%s,server,nowait" % qmp]
         self.proc = subprocess.Popen(
             [os.environ.get("QEMU", "qemu-system-x86_64"), "-m", "256M", "-no-reboot",
              "-display", "none", "-serial", "stdio", "-vga", "none", "-device", "VGA,vgamem_mb=64",

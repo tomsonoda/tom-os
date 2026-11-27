@@ -25,9 +25,9 @@ First milestone. Runs on x86-64 under QEMU.
 | Boot in QEMU and talk to the agent | Android devices / aarch64 |
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
 | Serial and VGA text consoles | Non-ASCII text on screen (only ASCII glyphs) |
-| Graphical desktop: windows, mouse, apps that draw pixels | Sound, GPU acceleration |
+| Graphical desktop: full-screen apps with swipe switching, or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
 | Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
-| Several apps running at once, each in its own window | Process isolation between apps |
+| Several apps running at once | Process isolation between apps |
 | Booting from an ISO (BIOS) | UEFI boot, installing to disk |
 | In-memory filesystem | Storage that survives a reboot |
 | LLM access over plain HTTP | TLS, DHCP, DNS |
@@ -50,7 +50,7 @@ make test-iso # runs the same test booting from the ISO
 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
-`make test` does not use a real LLM. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` covers graphical mode: it sends key presses and mouse movement through QEMU and checks pixels in screenshots (windows, focus switching, dragging, a graphics app reacting to held keys).
+`make test` does not use a real LLM. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` (windows layout) and `tests/phone_test.py` (full-screen layout) cover graphical mode: they send key presses and absolute mouse movement through QEMU and check pixels in screenshots (switching apps by dragging, the card view, clicks reaching apps, a graphics app reacting to held keys).
 
 ## Running
 
@@ -128,6 +128,45 @@ Sizes above 1920x1080 need more video memory than QEMU gives by default. The `ma
 
 On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, so the picture is enlarged to fill the QEMU window when you resize or maximize it. Scaling by QEMU makes text a little blurry; for the sharpest picture, pick a size with `/display` that matches the window. Override the QEMU display options with `QEMU_DISPLAY=...`.
 
+### The graphical desktop
+
+Graphical mode has two layouts. Switch with `/layout full` and `/layout windows`, or boot with `layout=windows`.
+
+**Full screen (default)**: one app at a time fills the screen, like on a phone. The shell is the first app; every app you start opens to its right.
+
+- Drag the bar at the bottom of the screen sideways to switch to the app on the left or right. A short drag springs back.
+- Click the bottom bar (or drag it up, or press `Alt+Up`) to see all apps as cards. Drag the row of cards sideways, click a card to open that app, and drag a card up or click its `x` to close it. `Esc` goes back.
+- The `<` and `>` at the top left and right also switch apps, and so do `Alt+Left` and `Alt+Right`. Clicking the app name at the top opens the card view. `Alt+Q` closes the current app.
+- Apps that ask for a small canvas are shown enlarged; `gfx.mode()` without a size gives an app the whole screen.
+
+**Windows**: overlapping windows with title bars.
+
+- Click a window to bring it to the front, drag its title bar to move it, click the red box to close an app.
+- `Alt+Tab` switches to the next window, `Alt+Q` closes the focused app, `Alt+arrows` move the focused window.
+
+In both layouts:
+
+- On a Mac, `Alt` is the Option key.
+- The pointer follows the host's mouse exactly (QEMU's absolute "vmmouse" pointer), so there is nothing to capture or release, and clicks land where you click, also when the QEMU window is zoomed. `/info` shows `absolute pointer` when this works. Without it, tom-os falls back to the PS/2 mouse, which QEMU captures when you click in its window.
+- Apps keep running while you type in the shell or wait for the LLM.
+- A text app's screen stays after it finishes, so its output can be read; press a key to close it. If an app fails, the error is shown there.
+
+### Screen size
+
+The graphical desktop starts at 1024x768. Larger screens are available at boot or at any time:
+
+| | At boot | While running |
+|---|---|---|
+| More room | `make run-gui RES=1920x1080` | `/display 1920x1080` |
+| Everything twice as big | `make run-gui RES=2048x1536` | `/display 2048x1536` |
+| Choose the scale | `make run-gui RES=2560x1600 SCALE=2` | `/display 2560x1600 2` |
+
+The scale (1 to 4) enlarges everything, so text stays sharp on large or high-resolution displays. Screens of 2048x1200 and larger use scale 2 unless another scale is given. After scaling, at least 800x600 must remain. The kernel arguments are `res=WIDTHxHEIGHT` and `scale=N`, and the ISO menu has entries for the large and wide sizes.
+
+Sizes above 1920x1080 need more video memory than QEMU gives by default. The `make` targets start QEMU with `-vga none -device VGA,vgamem_mb=64`; add the same options when starting QEMU by hand.
+
+On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, so the picture is enlarged to fill the QEMU window when you resize or maximize it. Scaling by QEMU makes text a little blurry; for the sharpest picture, pick a size with `/display` that matches the window. Override the QEMU display options with `QEMU_DISPLAY=...`.
+
 ### The desktop (graphical mode)
 
 - Click a window to bring it to the front. Drag its title bar to move it. Click the red box to close an app.
@@ -140,9 +179,10 @@ On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, 
 |---|---|
 | (plain text) | Ask the agent |
 | `/apps` | List files (apps are saved as `apps/<name>.lua`) |
-| `/run <name>` | Start an app (graphical mode: in a new window) |
+| `/run <name>` | Start an app (graphical mode: on its own screen or window) |
 | `/ps` `/kill <id>` | List and stop running apps (graphical mode) |
 | `/display <w>x<h> [scale]` | Change the screen size (graphical mode) |
+| `/layout full` `/layout windows` | One app at a time, or overlapping windows (graphical mode) |
 | `/cat <path>` `/rm <path>` | Show or delete a file |
 | `/lua <code>` | Run one line of Lua |
 | `/clear` | Forget the conversation |
@@ -218,7 +258,7 @@ python3 tools/claude_gateway.py
 3. `/info` shows the network device
 4. One chat round trip with the LLM works
 5. "Make me a ... app" produces an app, and `/run <name>` starts it
-6. In graphical mode: "make a breakout game" opens a window with a playable game; the mouse and `Alt+Tab` work
+6. In graphical mode: "make a breakout game" opens a playable game full screen; clicks work where you click; dragging the bottom bar switches between the game and the shell
 
 ## How it works
 
@@ -264,10 +304,10 @@ In addition to Lua's `string`, `table`, `math`, `utf8` and `coroutine`:
 
 Graphics (graphical mode only; `tomos.gui` tells an app whether it is available):
 
-- `gfx.mode(width, height [, title])` turns the app's window into a pixel canvas
+- `gfx.mode([title])` turns the app's screen into a pixel canvas as large as possible; `gfx.mode(width, height [, title])` asks for a size (small canvases are shown enlarged in full-screen layout)
 - `gfx.clear([color])` `gfx.rect(x, y, w, h, color)` `gfx.box(x, y, w, h, color)` `gfx.line(x1, y1, x2, y2, color)` `gfx.circle(x, y, r, color [, filled])` `gfx.pixel(x, y, color)` `gfx.text(x, y, string, color [, scale])`
 - `gfx.flip([fps])` shows the frame and waits for the next one (60 per second by default)
-- `gfx.key(name)` is true while a key is held (`'left'`, `'space'`, `'a'`, ...); `gfx.mouse()` returns x, y and the two buttons
+- `gfx.key(name)` is true while a key is held (`'left'`, `'space'`, `'a'`, ...); `gfx.mouse()` returns x, y and the two buttons in canvas coordinates (a short click counts as down for at least one call)
 - `gfx.rgb(r, g, b)` `gfx.size()`; colors are integers `0xRRGGBB`
 
 ```lua

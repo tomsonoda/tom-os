@@ -60,6 +60,63 @@ class Monitor:
             time.sleep(0.3)
 
 
+class Pointer:
+    """Moves the absolute pointer and clicks, through QEMU's QMP interface.
+    Coordinates are screen pixels."""
+
+    def __init__(self, path, screen):
+        import json
+        self.json = json
+        self.screen = screen
+        self.sock = socket.socket(socket.AF_UNIX)
+        for _ in range(100):
+            try:
+                self.sock.connect(path)
+                break
+            except OSError:
+                time.sleep(0.05)
+        self.f = self.sock.makefile("rw")
+        self.f.readline()  # greeting
+        self._call({"execute": "qmp_capabilities"})
+        self.x = self.y = 0
+
+    def _call(self, msg):
+        self.f.write(self.json.dumps(msg) + "\n")
+        self.f.flush()
+        while True:
+            reply = self.json.loads(self.f.readline())
+            if "return" in reply or "error" in reply:
+                assert "error" not in reply, reply
+                return reply
+
+    def _send(self, events):
+        self._call({"execute": "input-send-event", "arguments": {"events": events}})
+
+    def move(self, x, y):
+        self.x, self.y = x, y
+        w, h = self.screen
+        self._send([{"type": "abs", "data": {"axis": "x", "value": int(x * 0x7FFF / w) + 1}},
+                    {"type": "abs", "data": {"axis": "y", "value": int(y * 0x7FFF / h) + 1}}])
+        time.sleep(0.05)
+
+    def button(self, down):
+        self._send([{"type": "btn", "data": {"down": down, "button": "left"}}])
+        time.sleep(0.05)
+
+    def click(self, x, y):
+        self.move(x, y)
+        self.button(True)
+        self.button(False)
+
+    def drag(self, x0, y0, x1, y1, steps=8):
+        self.move(x0, y0)
+        self.button(True)
+        for i in range(1, steps + 1):
+            self.move(x0 + (x1 - x0) * i // steps, y0 + (y1 - y0) * i // steps)
+            time.sleep(0.03)
+        self.button(False)
+
+
 class Screen:
     def __init__(self, mon, tmpdir):
         self.mon, self.path = mon, os.path.join(tmpdir, "screen.ppm")
@@ -93,10 +150,11 @@ class Screen:
 def main():
     _, port = mock_llm.start()
     tmpdir = tempfile.mkdtemp(prefix="tomos-gui-")
-    mon_path = os.path.join(tmpdir, "mon")
-    vm = boot_test.VM(port, gui=True, monitor=mon_path)
+    mon_path, qmp_path = os.path.join(tmpdir, "mon"), os.path.join(tmpdir, "qmp")
+    vm = boot_test.VM(port, gui=True, monitor=mon_path, qmp=qmp_path, args="layout=windows")
     mon = Monitor(mon_path)
     scr = Screen(mon, tmpdir)
+    ptr = Pointer(qmp_path, (1024, 768))
     steps = 0
 
     def step(name, fn):
@@ -112,8 +170,9 @@ def main():
         def boot():
             vm.expect("network up", 90)   # from the ISO this includes the GRUB countdown
             vm.expect(PROMPT)
-            if vm.iso:
+            if vm.iso:  # the ISO boots in the default layout
                 vm.command("/set llm 10.0.2.2:%d" % port, PROMPT)
+                vm.command("/layout windows", PROMPT)
             scr.wait_pixel(1000, 600, DESKTOP, "desktop background")
             scr.wait_pixel(500, 20, TITLE_ON, "shell window title bar")
             assert (scr.w, scr.h) == (1024, 768)
@@ -150,16 +209,8 @@ def main():
         step("Alt+Tab switches windows", switch)
 
         def drag():
-            # pointer starts at the screen centre; grab the app's title bar and drag it
-            for dx, dy in ((-100, -100), (-100, -100), (-112, -134)):
-                mon.cmd("mouse_move %d %d" % (dx, dy))
-                time.sleep(0.1)
-            mon.cmd("mouse_button 1")
-            time.sleep(0.2)
-            for _ in range(4):
-                mon.cmd("mouse_move 25 20")
-                time.sleep(0.1)
-            mon.cmd("mouse_button 0")
+            # grab the app's title bar and drag it 100 right, 80 down
+            ptr.drag(AX + 150, AY - 10, AX + 250, AY + 70)
             scr.wait_pixel(AX + 100 + 220, AY + 80 + 70, GREEN, "square after dragging the window")
         step("the mouse drags a window by its title bar", drag)
 

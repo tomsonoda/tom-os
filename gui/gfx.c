@@ -187,6 +187,18 @@ void gfx_text(surface *s, int x, int y, const char *str, size_t n, u32 fg, long 
     }
 }
 
+/* Draws src (sw x sh) stretched to dw x dh with nearest-neighbour sampling. */
+void gfx_blit_resize(surface *dst, int dx, int dy, int dw, int dh, const u32 *src, int sw, int sh) {
+    if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+    int x0 = dx < dst->cx0 ? dst->cx0 : dx, y0 = dy < dst->cy0 ? dst->cy0 : dy;
+    int x1 = dx + dw > dst->cx1 ? dst->cx1 : dx + dw, y1 = dy + dh > dst->cy1 ? dst->cy1 : dy + dh;
+    for (int y = y0; y < y1; y++) {
+        const u32 *row = src + (size_t)((long)(y - dy) * sh / dh) * sw;
+        u32 *out = dst->px + (size_t)y * dst->w;
+        for (int x = x0; x < x1; x++) out[x] = row[(long)(x - dx) * sw / dw];
+    }
+}
+
 void gfx_blit(surface *dst, int dx, int dy, const u32 *src, int sw, int sh) {
     int x0 = dx < dst->cx0 ? dst->cx0 : dx, y0 = dy < dst->cy0 ? dst->cy0 : dy;
     int x1 = dx + sw > dst->cx1 ? dst->cx1 : dx + sw, y1 = dy + sh > dst->cy1 ? dst->cy1 : dy + sh;

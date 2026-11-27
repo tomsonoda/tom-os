@@ -70,6 +70,7 @@ void tty_destroy(tty *t);
 void tty_input(tty *t, const char *bytes); /* deliver typed characters */
 void console_poll_input(void);        /* drain serial / keyboard / mouse */
 void mouse_init(void);
+int mouse_absolute(void);             /* the host pointer is followed exactly (vmmouse) */
 
 /* All of these act on the calling thread's tty. */
 void console_write(const char *s, size_t n);
@@ -136,6 +137,7 @@ void gfx_circle(surface *s, int cx, int cy, int r, u32 c, int fill);
 void gfx_glyph(surface *s, int x, int y, u8 ch, u32 fg, long bg, int scale); /* bg < 0: transparent */
 void gfx_text(surface *s, int x, int y, const char *str, size_t n, u32 fg, long bg, int scale);
 void gfx_blit(surface *dst, int dx, int dy, const u32 *src, int sw, int sh);
+void gfx_blit_resize(surface *dst, int dx, int dy, int dw, int dh, const u32 *src, int sw, int sh);
 
 /* ---- window manager (gui/wm.c) ---- */
 typedef struct window {
@@ -149,6 +151,7 @@ typedef struct window {
     thread *owner;    /* killed when the window is closed; NULL = not closable */
     u8 keys[256];     /* keys currently held (scancode, +0x80 for extended) */
     int mx, my, mb;   /* mouse position inside the content, buttons */
+    int mb_latch;     /* buttons pressed since the app last looked (short clicks) */
     u64 last_flip;
 } window;
 /* The screen is w x h device pixels; everything is drawn at 1/scale of that
@@ -168,7 +171,13 @@ void wm_set_text(window *w);
 void wm_present(window *w);
 void wm_set_title(window *w, const char *title);
 void wm_key(int code, int down, int alt, const char *chars);
-void wm_mouse(int dx, int dy, int buttons);
+void wm_mouse(int dx, int dy, int buttons);          /* relative pointer (PS/2) */
+void wm_mouse_abs(int x, int y, int buttons);        /* absolute pointer, 0..65535 */
+/* Layouts: full screen (one app at a time, like a phone) or overlapping windows. */
+enum { LAYOUT_FULL, LAYOUT_WINDOWS };
+void wm_set_layout(int layout);
+int wm_layout(void);
+void wm_canvas_max(int *w, int *h); /* largest canvas an app can use */
 int wm_screen_w(void);
 int wm_screen_h(void);
 

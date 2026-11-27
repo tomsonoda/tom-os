@@ -29,6 +29,7 @@ void kmain(u32 mb_info, u32 magic) {
                 w, h);
         gui = wm_init(1024, 768, 1) == 0;
     }
+    if (gui && cmdline_get("layout", v, sizeof v) && v[0] == 'w') wm_set_layout(LAYOUT_WINDOWS);
     if (gui) {
         /* The shell window grows with the screen: 80x30 at 1024x768. */
         int cols = 80 + (wm_screen_w() - 1024) / 16, rows = 30 + (wm_screen_h() - 768) / 32;

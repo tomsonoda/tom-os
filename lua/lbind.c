@@ -697,13 +697,18 @@ static u32 argcolor(lua_State *L, int idx) { return (u32)luaL_optinteger(L, idx,
 
 static int g_mode(lua_State *L) {
     window *w = gfx_window(L, 0);
-    int width = argi(L, 1), height = argi(L, 2);
+    int max_w, max_h;
+    wm_canvas_max(&max_w, &max_h);
+    /* gfx.mode() or gfx.mode(title): use the whole screen */
+    int whole = lua_isnoneornil(L, 1) || lua_type(L, 1) == LUA_TSTRING;
+    int width = whole ? max_w : argi(L, 1), height = whole ? max_h : argi(L, 2);
+    int title_arg = whole ? 1 : 3;
     if (width < 64) width = 64;
     if (height < 32) height = 32;
-    if (width > wm_screen_w() - 4) width = wm_screen_w() - 4;
-    if (height > wm_screen_h() - 28) height = wm_screen_h() - 28;
+    if (width > max_w) width = max_w;
+    if (height > max_h) height = max_h;
     if (wm_set_canvas(w, width, height) != 0) return luaL_error(L, "out of memory");
-    if (lua_isstring(L, 3)) wm_set_title(w, lua_tostring(L, 3));
+    if (lua_isstring(L, title_arg)) wm_set_title(w, lua_tostring(L, title_arg));
     lua_pushinteger(L, width);
     lua_pushinteger(L, height);
     return 2;
@@ -812,12 +817,16 @@ static int g_key(lua_State *L) {
     return luaL_error(L, "unknown key name '%s'", name);
 }
 
+/* gfx.mouse() -> x, y, left, right. A button counts as down if it is held
+ * now or was pressed since the last call, so short clicks are not missed. */
 static int g_mouse(lua_State *L) {
     window *w = gfx_window(L, 0);
+    int b = w->mb | w->mb_latch;
+    w->mb_latch = 0;
     lua_pushinteger(L, w->mx);
     lua_pushinteger(L, w->my);
-    lua_pushboolean(L, w->mb & 1);
-    lua_pushboolean(L, w->mb & 2);
+    lua_pushboolean(L, b & 1);
+    lua_pushboolean(L, b & 2);
     return 4;
 }
 
