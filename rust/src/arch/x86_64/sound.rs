@@ -6,7 +6,7 @@
 use alloc::alloc::{Layout, alloc_zeroed};
 use alloc::vec::Vec;
 
-use crate::pci::{self, inb, inl, inw, outb, outl, outw};
+use super::pci::{self, inb, inl, inw, outb, outl, outw};
 use crate::rt::KCell;
 use crate::cpu;
 

@@ -1,4 +1,4 @@
-//! Interrupt table, interrupt controller, timer, clock and power.
+//! Interrupt table, interrupt controller, timer, clock and power of the PC.
 
 use core::arch::asm;
 use core::arch::x86_64::_rdtsc;
@@ -6,9 +6,8 @@ use core::cell::UnsafeCell;
 use core::fmt::Write;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::pci::{inb, outb, outw};
+use super::pci::{inb, outb, outw};
 use crate::rt;
-use crate::{net, sched};
 
 // SAFETY (all port I/O in this file): the interrupt controllers, the
 // timer, the CMOS clock and the power ports of a PC, used only here.
@@ -57,7 +56,7 @@ static TSC_PER_MS: AtomicU64 = AtomicU64::new(1);
 static TSC_AT_BOOT: AtomicU64 = AtomicU64::new(0);
 
 /// The CPU's time stamp counter.
-pub fn tsc() -> u64 {
+fn tsc() -> u64 {
     // SAFETY: RDTSC is available on every x86-64 CPU
     unsafe { _rdtsc() }
 }
@@ -77,6 +76,11 @@ fn tsc_calibrate() {
     TSC_AT_BOOT.store(t1, Ordering::Relaxed);
 }
 
+/// A number that is hard to predict (for sequence numbers and the like).
+pub fn entropy() -> u64 {
+    tsc()
+}
+
 /// Milliseconds since start-up.
 pub fn time_ms() -> u64 {
     tsc().wrapping_sub(TSC_AT_BOOT.load(Ordering::Relaxed)) / TSC_PER_MS.load(Ordering::Relaxed)
@@ -86,14 +90,6 @@ pub fn time_ms() -> u64 {
 pub fn halt() {
     // SAFETY: interrupts only wake the CPU; their handlers touch nothing
     unsafe { asm!("sti", "hlt", options(nomem, nostack)) };
-}
-
-pub fn sleep_ms(ms: u64) {
-    let end = time_ms() + ms;
-    while time_ms() < end {
-        net::poll();
-        sched::idle();
-    }
 }
 
 fn cmos(reg: u8) -> u8 {
@@ -197,7 +193,8 @@ pub fn init() {
     unsafe { asm!("sti", options(nomem, nostack)) };
 }
 
-fn stop() -> ! {
+/// Stops the CPU for good.
+pub fn stop() -> ! {
     loop {
         // SAFETY: stops the CPU for good
         unsafe { asm!("cli", "hlt", options(nomem, nostack)) };
@@ -215,17 +212,4 @@ pub fn poweroff() -> ! {
 pub fn reboot() -> ! {
     unsafe { outb(0x64, 0xFE) };
     stop()
-}
-
-// The Lua interpreter (third_party/remedy-lua/src/nostd.rs) asks the kernel
-// for its clocks by these names.
-
-#[unsafe(export_name = "time_ms")]
-extern "C" fn time_ms_for_lua() -> u64 {
-    time_ms()
-}
-
-#[unsafe(export_name = "rtc_unix_time")]
-extern "C" fn unix_time_for_lua() -> u64 {
-    unix_time()
 }

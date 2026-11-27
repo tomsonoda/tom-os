@@ -11,6 +11,12 @@ Output format (little endian):
     count x 32 bytes: 16 rows of 16 pixels, two bytes per row, MSB = left
 
 Usage: python3 tools/make_font.py shnmk16.pcf.gz rust/assets/font_ja.bin
+
+With --ascii it builds rust/assets/font_8x16.bin instead, from the 8x16
+half-width font of the same family (shnm8x16a.pcf.gz): 256 glyphs of 16
+bytes, one byte per row, MSB = left; code points without a glyph are blank.
+
+       python3 tools/make_font.py --ascii shnm8x16a.pcf.gz rust/assets/font_8x16.bin
 """
 import gzip
 import struct
@@ -105,13 +111,27 @@ def unicode_for(b1, b2):
     return [ord(c) for c in out if len(c) == 1 and ord(c) < 0x10000]
 
 
+def main_ascii(src, dst):
+    glyphs = read_pcf(src)
+    out = bytearray(256 * 16)
+    n = 0
+    for (b1, b2), rows in glyphs.items():
+        if b1 == 0 and 0x20 <= b2 < 0x7F:
+            out[b2 * 16:b2 * 16 + 16] = bytes(r >> 8 for r in rows)
+            n += 1
+    open(dst, "wb").write(out)
+    print("%s: %d glyphs, %d bytes" % (dst, n, len(out)))
+
+
 def main():
+    if sys.argv[1] == "--ascii":
+        return main_ascii(sys.argv[2], sys.argv[3])
     src, dst = sys.argv[1], sys.argv[2]
     glyphs = read_pcf(src)
     table = {}
     for (b1, b2), rows in glyphs.items():
         for cp in unicode_for(b1, b2):
-            if cp >= 0x80:  # ASCII comes from the VGA font
+            if cp >= 0x80:  # ASCII comes from the 8x16 font
                 table.setdefault(cp, rows)
     cps = sorted(table)
     with open(dst, "wb") as f:

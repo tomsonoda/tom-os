@@ -94,7 +94,7 @@ fn pseudo_sum(src: u32, dst: u32, len: usize) -> u32 {
 }
 
 fn timestamp() -> u64 {
-    cpu::tsc()
+    cpu::entropy()
 }
 
 impl Net {

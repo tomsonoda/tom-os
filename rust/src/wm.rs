@@ -1641,7 +1641,7 @@ pub fn init(w: i32, h: i32, scale: i32) -> bool {
         ok
     });
     if ok {
-        console::mouse_init();
+        crate::arch::input::init_pointer();
         WM.with(|wm| {
             wm.active = true;
             wm.damage_all();

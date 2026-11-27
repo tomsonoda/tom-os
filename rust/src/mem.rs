@@ -6,12 +6,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::cell::UnsafeCell;
 use core::ptr::null_mut;
 
+use crate::arch::boot;
 use crate::rt::KCell;
-
-unsafe extern "C" {
-    /// The end of the kernel image (linker.ld).
-    static __kernel_end: u8;
-}
 
 // ------------------------------------------------------------------ heap
 
@@ -277,49 +273,16 @@ pub fn arg(key: &str) -> Option<String> {
     })
 }
 
-/// Reads what the boot loader passed (the Multiboot information
-/// structure) and sets up the heap in the largest free piece of memory.
+/// Reads what the boot loader passed and sets up the heap.
 ///
 /// # Safety
-/// `multiboot_info` must be the address the boot loader gave, and this
+/// `boot_arg` must be what the boot loader gave to the kernel, and this
 /// must run once, before anything allocates.
-pub unsafe fn init(multiboot_info: u32) {
-    let field = |i: usize| unsafe { ((multiboot_info as usize + 4 * i) as *const u32).read_unaligned() };
-    let flags = field(0);
-    let kernel_end = (&raw const __kernel_end as usize + 0xFFFF) & !0xFFFF;
-    const LIMIT: u64 = 0x1_0000_0000; // only 4 GiB are mapped
-
-    let (mut base, mut len) = (0u64, 0u64);
-    if flags & (1 << 6) != 0 {
-        // memory map: entries of (size, base, length, type)
-        let (mut p, end) = (field(12) as usize, field(12) as usize + field(11) as usize);
-        while p < end {
-            let (size, start, l, kind) = unsafe {
-                (
-                    (p as *const u32).read_unaligned(),
-                    ((p + 4) as *const u64).read_unaligned(),
-                    ((p + 12) as *const u64).read_unaligned(),
-                    ((p + 20) as *const u32).read_unaligned(),
-                )
-            };
-            if kind == 1 && start < LIMIT {
-                let top = start.saturating_add(l).min(LIMIT);
-                let lo = start.max(kernel_end as u64);
-                if top > lo && top - lo > len {
-                    (base, len) = (lo, top - lo);
-                }
-            }
-            p += size as usize + 4;
-        }
-    }
-    if len == 0 {
-        // no memory map: assume 64 MiB
-        (base, len) = (kernel_end as u64, 0x400_0000 - kernel_end as u64);
-    }
-
+pub unsafe fn init(boot_arg: usize) {
+    let info = unsafe { boot::info(boot_arg) };
     let h = heap();
-    h.lo = base as usize;
-    h.hi = h.lo + (len as usize & !15);
+    h.lo = (info.heap_base + 15) & !15;
+    h.hi = (info.heap_base + info.heap_len) & !15;
     let first = h.lo as *mut FreeBlock;
     // SAFETY: the range is free memory according to the boot loader
     unsafe {
@@ -328,9 +291,5 @@ pub unsafe fn init(multiboot_info: u32) {
         h.list_insert(first);
     }
 
-    if flags & (1 << 2) != 0 {
-        // SAFETY: a NUL-terminated string from the boot loader
-        let text = unsafe { core::ffi::CStr::from_ptr(field(4) as usize as *const core::ffi::c_char) };
-        COMMAND_LINE.with(|line| *line = text.to_bytes().to_vec());
-    }
+    COMMAND_LINE.with(|line| *line = info.command_line.to_vec());
 }

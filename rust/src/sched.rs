@@ -6,6 +6,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::arch::thread;
 use crate::rt::KCell;
 use crate::{console, cpu, net, sound, wm};
 
@@ -64,12 +65,6 @@ static SCHED: KCell<Sched> = KCell::new(Sched {
     current: 0,
     next_id: 2,
 });
-
-unsafe extern "C" {
-    /// arch/x86_64/boot.asm: saves the callee-saved registers and the stack
-    /// pointer (into `*save_rsp`) and continues on the stack `new_rsp`.
-    fn ctx_switch(save_rsp: *mut u64, new_rsp: u64);
-}
 
 fn me<R>(f: impl FnOnce(&mut Thread) -> R) -> R {
     SCHED.with(|s| f(&mut s.threads[s.current]))
@@ -155,7 +150,16 @@ fn switch_next(idle: bool) {
         // SAFETY: `save` points into the static thread table; `new` was
         // saved by an earlier switch or built by `spawn`. The scheduler
         // state is not borrowed here.
-        unsafe { ctx_switch(save, new) };
+        unsafe { thread::ctx_switch(save, new) };
+    }
+}
+
+/// Waits for `ms` milliseconds, letting other threads run.
+pub fn sleep_ms(ms: u64) {
+    let end = cpu::time_ms() + ms;
+    while cpu::time_ms() < end {
+        net::poll();
+        idle();
     }
 }
 
@@ -190,10 +194,8 @@ pub fn spawn(f: Box<dyn FnOnce()>, tty: usize) -> Option<ThreadId> {
     let mut stack = Vec::new();
     stack.try_reserve_exact(STACK_SIZE).ok()?;
     stack.resize(STACK_SIZE, 0u8);
-    // The first frame for ctx_switch: six saved registers, then the entry
-    // point as the return address, then a zero as the entry's own caller.
     let top = (stack.as_ptr() as usize + STACK_SIZE) & !15;
-    let frame = [0u64, 0, 0, 0, 0, 0, thread_entry as *const () as u64, 0];
+    let frame = thread::first_frame(thread_entry);
     let at = top - size_of_val(&frame) - stack.as_ptr() as usize;
     for (i, word) in frame.iter().enumerate() {
         stack[at + 8 * i..at + 8 * i + 8].copy_from_slice(&word.to_le_bytes());

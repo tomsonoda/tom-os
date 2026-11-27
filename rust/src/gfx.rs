@@ -1,9 +1,8 @@
-//! Linear framebuffer (Bochs/QEMU "BGA" display interface), fonts and 2D
-//! drawing.
+//! The screen, fonts and 2D drawing.
 
 use alloc::vec::Vec;
 
-use crate::pci::{self, inw, outw};
+use crate::arch::display;
 use crate::rt::KCell;
 
 /// A rectangle of pixels (0x00RRGGBB) with a clip rectangle. C code shares
@@ -172,9 +171,9 @@ impl Surface {
         }
     }
 
-    /// An 8x16 character of the VGA font.
+    /// An 8x16 character.
     pub fn glyph(&mut self, x: i32, y: i32, ch: u8, fg: u32, bg: Option<u32>, scale: i32) {
-        let g = FONT.with(|f| f[ch as usize]);
+        let g = &FONT[ch as usize * 16..ch as usize * 16 + 16];
         self.bitmap(x, y, 8, |row| g[row] as u32, fg, bg, scale);
     }
 
@@ -261,8 +260,9 @@ pub fn utf8_decode(s: &[u8]) -> (u32, usize) {
     (v, need + 1)
 }
 
-/// The 8x16 font, copied from the VGA adapter at start-up.
-static FONT: KCell<[[u8; 16]; 256]> = KCell::new([[0; 16]; 256]);
+/// The 8x16 font for ASCII (see tools/make_font.py): 256 glyphs of 16
+/// rows, one byte per row.
+static FONT: &[u8; 4096] = include_bytes!("../assets/font_8x16.bin");
 
 /// The Japanese font (see tools/make_font.py): "TJF1", the number of
 /// glyphs, their code points in ascending order, then 32 bytes per glyph.
@@ -294,96 +294,6 @@ pub fn font_wide(cp: u32) -> Option<&'static [u8; 32]> {
 }
 
 // ----------------------------------------------------------- framebuffer
-
-const BGA_INDEX: u16 = 0x1CE;
-const BGA_DATA: u16 = 0x1CF;
-
-// SAFETY (both): the Bochs display interface's own ports
-fn bga_write(index: u16, value: u16) {
-    unsafe {
-        outw(BGA_INDEX, index);
-        outw(BGA_DATA, value);
-    }
-}
-
-fn bga_read(index: u16) -> u16 {
-    unsafe {
-        outw(BGA_INDEX, index);
-        inw(BGA_DATA)
-    }
-}
-
-/// Copies the 8x16 text-mode font out of VGA memory plane 2. Must run while
-/// the adapter is still in text mode. False if nothing sensible was read.
-fn read_vga_font() -> bool {
-    let mut font = [[0u8; 16]; 256];
-    // SAFETY: the VGA sequencer and graphics controller ports, and the VGA
-    // memory window at 0xA0000, which the kernel maps and nothing else uses
-    unsafe {
-        outw(0x3CE, 0x0005); // graphics mode: no odd/even addressing
-        outw(0x3CE, 0x0406); // map A0000, graphics addressing
-        outw(0x3CE, 0x0204); // read plane 2
-        outw(0x3C4, 0x0402); // write plane 2
-        outw(0x3C4, 0x0604); // sequential addressing
-        let plane = 0xA0000 as *const u8;
-        for (ch, glyph) in font.iter_mut().enumerate() {
-            for (row, b) in glyph.iter_mut().enumerate() {
-                *b = plane.add(ch * 32 + row).read_volatile();
-            }
-        }
-        outw(0x3C4, 0x0302); // back to text-mode settings
-        outw(0x3C4, 0x0204);
-        outw(0x3CE, 0x0004);
-        outw(0x3CE, 0x1005);
-        outw(0x3CE, 0x0E06);
-    }
-    let found = font[b'A' as usize].iter().chain(&font[b'g' as usize]).any(|&b| b != 0);
-    FONT.with(|f| *f = font);
-    found
-}
-
-/// The framebuffer's address: None = not looked for yet, Some(0) = no
-/// usable display adapter.
-static FB_ADDR: KCell<Option<u64>> = KCell::new(None);
-
-/// Finds the adapter and reads the font; only possible once, while the
-/// adapter is still in text mode.
-fn probe() -> Option<u64> {
-    let addr = FB_ADDR.with(|a| {
-        *a.get_or_insert_with(|| {
-            if bga_read(0) & 0xFFF0 != 0xB0C0 {
-                return 0;
-            }
-            // The framebuffer is BAR0 of the display adapter.
-            let mut addr = 0;
-            'scan: for bus in 0..=255u8 {
-                for dev in 0..32u8 {
-                    if pci::pci_read(bus, dev, 0, 0) & 0xFFFF == 0xFFFF || pci::pci_read(bus, dev, 0, 0x08) >> 24 != 0x03 {
-                        continue;
-                    }
-                    let bar0 = pci::pci_read(bus, dev, 0, 0x10);
-                    if bar0 & 1 == 0 && bar0 & !0xF != 0 {
-                        addr = (bar0 & !0xF) as u64;
-                        break 'scan;
-                    }
-                }
-            }
-            if addr != 0 && read_vga_font() { addr } else { 0 }
-        })
-    });
-    (addr != 0).then_some(addr)
-}
-
-/// Video memory in bytes; 0 without a usable adapter.
-pub fn fb_vram() -> usize {
-    if probe().is_none() {
-        return 0;
-    }
-    match bga_read(0x0A) as usize * 65536 {
-        0 => 16 << 20,
-        v => v,
-    }
-}
 
 /// The screen; set by `fb_init` only.
 static SCREEN: KCell<Surface> = KCell::new(Surface::empty());
@@ -424,31 +334,24 @@ pub fn draw_on<R>(px: &mut [u32], w: i32, h: i32, f: impl FnOnce(&mut Surface) -
     f(&mut unsafe { Surface::new(px.as_mut_ptr(), w, h) })
 }
 
-/// Switches to a linear framebuffer: 0 on success, -2 if the adapter has
+/// Video memory in bytes; 0 if the machine has no display.
+pub fn fb_vram() -> usize {
+    display::vram()
+}
+
+/// Switches the display to `w` x `h` pixels: 0 on success, -2 if there is
 /// too little video memory, -1 if graphics are unavailable or the mode
 /// failed.
 pub fn fb_init(w: i32, h: i32) -> i32 {
-    let Some(addr) = probe() else { return -1 };
-    if w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF {
+    if w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF || display::vram() == 0 {
         return -1;
     }
-    let bytes = w as u64 * h as u64 * 4;
-    if bytes > fb_vram() as u64 {
+    if w as u64 * h as u64 * 4 > display::vram() as u64 {
         return -2;
     }
-    if addr + bytes > 0x1_0000_0000 {
-        return -1; // only 4 GiB are mapped
-    }
-    bga_write(4, 0); // disable while changing the mode
-    bga_write(1, w as u16);
-    bga_write(2, h as u16);
-    bga_write(3, 32);
-    bga_write(4, 0x41); // enabled + linear framebuffer
-    if bga_read(1) as i32 != w || bga_read(2) as i32 != h {
-        return -1;
-    }
-    // SAFETY: the adapter now shows w * h pixels at `addr`, which is mapped
-    // and has at least that much video memory (checked above)
-    SCREEN.with(|s| *s = unsafe { Surface::new(addr as *mut u32, w, h) });
+    let Some(pixels) = display::set_mode(w, h) else { return -1 };
+    // SAFETY: the display now shows w * h pixels at this address, which
+    // has at least that much video memory (checked above)
+    SCREEN.with(|s| *s = unsafe { Surface::new(pixels, w, h) });
     0
 }

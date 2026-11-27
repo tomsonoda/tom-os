@@ -32,16 +32,11 @@ fn start_graphics() {
     }
 }
 
-/// Called by the boot code (arch/x86_64/boot.asm) once the CPU is in
-/// 64-bit mode, with what the boot loader passed.
-#[unsafe(no_mangle)]
-pub extern "C" fn kmain(multiboot_info: u32, magic: u32) {
-    if magic != 0x2BAD_B002 {
-        console::write(b"tom-os: not started by a Multiboot loader\n");
-        return;
-    }
+/// Starts the kernel; called by the machine's boot code with what the
+/// boot loader passed.
+pub fn main(boot_arg: usize) -> ! {
     // SAFETY: the boot loader's information, used once, before anything allocates
-    unsafe { mem::init(multiboot_info) };
+    unsafe { mem::init(boot_arg) };
     console::init();
     cpu::init();
     net::init();
@@ -52,5 +47,5 @@ pub extern "C" fn kmain(multiboot_info: u32, magic: u32) {
     let memory = mem::total() >> 20;
     let network = if net::up() { "up" } else { "not found" };
     kprint!("{memory} MiB memory, network {network}. Type /help for commands.\n\n{}", ui::END);
-    shell::run();
+    shell::run()
 }

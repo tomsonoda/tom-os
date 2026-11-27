@@ -47,10 +47,7 @@ pub fn halt(what: &str, details: &[u8]) -> ! {
     console(b": ");
     console(details);
     console(b"\n*** system halted\n");
-    loop {
-        // SAFETY: stops the CPU for good; nothing runs after a fatal error
-        unsafe { core::arch::asm!("cli", "hlt") };
-    }
+    crate::cpu::stop()
 }
 
 pub fn console(bytes: &[u8]) {
@@ -98,4 +95,17 @@ impl<T> KCell<T> {
     pub fn try_with<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
         self.0.try_borrow_mut().ok().map(|mut v| f(&mut v))
     }
+}
+
+// The Lua interpreter (third_party/remedy-lua/src/nostd.rs) asks the kernel
+// for its clocks by these names.
+
+#[unsafe(export_name = "time_ms")]
+extern "C" fn time_ms_for_lua() -> u64 {
+    crate::cpu::time_ms()
+}
+
+#[unsafe(export_name = "rtc_unix_time")]
+extern "C" fn unix_time_for_lua() -> u64 {
+    crate::cpu::unix_time()
 }

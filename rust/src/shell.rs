@@ -65,7 +65,7 @@ fn cmd_info() {
     if graphical() {
         let (w, h, scale) = wm::display();
         let layout = if full_screen() { "full screen" } else { "windows" };
-        let pointer = if crate::console::mouse_absolute() { "absolute" } else { "relative" };
+        let pointer = if crate::arch::input::pointer_absolute() { "absolute" } else { "relative" };
         kprint!("display: graphical ({layout}), {w}x{h}, scale {scale}, {pointer} pointer\n");
     } else {
         kprint!("display: text\n");

@@ -11,15 +11,12 @@
 use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::gfx::{font_wide, utf8_decode};
-use crate::pci::{inb, outb};
+use crate::arch::{display, input, serial};
 use crate::rt::KCell;
 use crate::{cpu, home, sched, wm};
-
-const COM1: u16 = 0x3F8;
 
 pub const KEY_TIMEOUT: i32 = -1;
 pub const KEY_BREAK: i32 = -2;
@@ -33,40 +30,12 @@ pub type TtyId = usize;
 /// The shell's tty: the serial line and the first screen.
 pub const SHELL_TTY: TtyId = 1;
 
-// ---------------------------------------------------------------- serial
-
-// SAFETY (all port I/O in this file): the ports of the PC's serial port,
-// keyboard controller and VGA adapter, which belong to the console.
-
-fn serial_init() {
-    unsafe {
-        outb(COM1 + 1, 0x00);
-        outb(COM1 + 3, 0x80);
-        outb(COM1, 0x01); // 115200 baud
-        outb(COM1 + 1, 0x00);
-        outb(COM1 + 3, 0x03); // 8N1
-        outb(COM1 + 2, 0xC7);
-        outb(COM1 + 4, 0x0B); // DTR, RTS, OUT2
-        outb(COM1 + 1, 0x01); // RX interrupt: wakes HLT
-    }
-}
-
-fn serial_putc(c: u8) {
-    unsafe {
-        let mut spins = 0;
-        while spins < 100_000 && inb(COM1 + 5) & 0x20 == 0 {
-            spins += 1;
-        }
-        outb(COM1, c);
-    }
-}
-
 fn serial_write(s: &[u8]) {
     for &c in s {
         if c == b'\n' {
-            serial_putc(b'\r');
+            serial::put(b'\r');
         }
-        serial_putc(c);
+        serial::put(c);
     }
 }
 
@@ -95,7 +64,7 @@ pub struct Term {
     utf_cp: u32,
     /// UTF-8 continuation bytes still expected
     utf_need: u8,
-    /// backed by the VGA text screen
+    /// backed by the machine's text screen (VGA on a PC)
     hw: bool,
 }
 
@@ -353,26 +322,10 @@ impl Term {
         *self = new;
     }
 
-    /// Copies what changed to the VGA text screen and moves its cursor.
+    /// Copies what changed to the machine's text screen and moves its cursor.
     fn flush_hw(&mut self) {
-        if !self.hw {
-            return;
-        }
-        let dirty = core::mem::take(&mut self.dirty);
-        let cols = self.cols as usize;
-        let screen = 0xB8000 as *mut u16;
-        for row in (0..self.rows as usize).filter(|row| dirty & (1 << row) != 0) {
-            for col in 0..cols {
-                // SAFETY: the 80x25 text screen, which the kernel maps
-                unsafe { screen.add(row * cols + col).write_volatile(self.cells[row * cols + col]) };
-            }
-        }
-        let pos = (self.cy * self.cols + self.cx) as u16;
-        unsafe {
-            outb(0x3D4, 0x0F);
-            outb(0x3D5, pos as u8);
-            outb(0x3D4, 0x0E);
-            outb(0x3D5, (pos >> 8) as u8);
+        if self.hw {
+            display::text_flush(&self.cells, self.cols as usize, core::mem::take(&mut self.dirty), (self.cx, self.cy));
         }
     }
 }
@@ -426,9 +379,10 @@ fn new_tty(c: &mut Console, term: Option<Term>, serial: bool) -> TtyId {
 /// Sets up the shell's tty on the VGA text screen and the serial line.
 /// Needs the heap.
 pub fn init() {
-    serial_init();
+    serial::init();
     CONSOLE.with(|c| {
-        let mut term = Term::new(80, 25, true);
+        // the text screen, on machines that have one
+        let mut term = display::TEXT_SCREEN.and_then(|(cols, rows)| Term::new(cols, rows, true));
         if let Some(t) = &mut term {
             t.flush_hw();
         }
@@ -546,19 +500,14 @@ const IME_TOGGLE: u8 = 0x1D;
 const IME_ON: u8 = 0x1E;
 const IME_OFF: u8 = 0x1F;
 
-struct Devices {
+/// Modifier keys held on the keyboard.
+struct Modifiers {
     shift: bool,
     ctrl: bool,
     alt: bool,
-    /// an E0 prefix was received
-    extended: bool,
-    mouse_packet: [u8; 3],
-    mouse_n: usize,
 }
 
-static DEVICES: KCell<Devices> =
-    KCell::new(Devices { shift: false, ctrl: false, alt: false, extended: false, mouse_packet: [0; 3], mouse_n: 0 });
-static VMMOUSE: AtomicBool = AtomicBool::new(false);
+static MODIFIERS: KCell<Modifiers> = KCell::new(Modifiers { shift: false, ctrl: false, alt: false });
 
 /// A key press or release: scancode (set 1, +0x80 for E0-prefixed keys),
 /// and what the key types.
@@ -571,22 +520,19 @@ struct KeyEvent {
     typed: u8,
 }
 
-impl Devices {
-    fn scancode(&mut self, sc: u8) -> Option<KeyEvent> {
-        if sc == 0xE0 {
-            self.extended = true;
-            return None;
-        }
-        let down = sc & 0x80 == 0;
-        let code = sc & 0x7F;
-        let event = |d: &Devices, code: i32, chars: Option<&'static [u8]>| {
+impl Modifiers {
+    /// A key went down or up. `code` is its PC scancode (set 1, 0..127);
+    /// `extended` marks the keys that have an E0 prefix on a PC keyboard
+    /// (arrows, Home, End, Delete, right Ctrl and Alt, keypad Enter).
+    fn key(&mut self, code: u8, extended: bool, down: bool) -> Option<KeyEvent> {
+        let event = |d: &Modifiers, code: i32, chars: Option<&'static [u8]>| {
             Some(KeyEvent { code, down, alt: d.alt, chars, typed: 0 })
         };
         // delivered whatever modifiers are held, on press only
         let plain = |code: u8, byte: &'static [u8]| {
             down.then_some(KeyEvent { code: code as i32, down: true, alt: false, chars: Some(byte), typed: 0 })
         };
-        if core::mem::take(&mut self.extended) {
+        if extended {
             match code {
                 0x1D => self.ctrl = down,
                 0x38 => self.alt = down,
@@ -624,26 +570,6 @@ impl Devices {
         }
         Some(KeyEvent { code: code as i32, down, alt: self.alt, chars: None, typed: ch })
     }
-
-    /// A byte from the PS/2 mouse; a full packet gives (dx, dy, buttons).
-    fn mouse_byte(&mut self, b: u8) -> Option<(i32, i32, i32)> {
-        if self.mouse_n == 0 && b & 0x08 == 0 {
-            return None; // resynchronise on the header byte
-        }
-        self.mouse_packet[self.mouse_n] = b;
-        self.mouse_n += 1;
-        if self.mouse_n < 3 {
-            return None;
-        }
-        self.mouse_n = 0;
-        let [head, x, y] = self.mouse_packet;
-        if head & 0xC0 != 0 {
-            return None; // overflow
-        }
-        let dx = x as i32 - if head & 0x10 != 0 { 256 } else { 0 };
-        let dy = y as i32 - if head & 0x20 != 0 { 256 } else { 0 };
-        Some((dx, -dy, (head & 7) as i32))
-    }
 }
 
 fn route(e: KeyEvent) {
@@ -656,141 +582,31 @@ fn route(e: KeyEvent) {
     }
 }
 
-fn ps2_wait_write() {
-    let mut spins = 0;
-    while spins < 100_000 && unsafe { inb(0x64) } & 2 != 0 {
-        spins += 1;
+/// A key went down or up (called by the machine's keyboard driver); see
+/// `Modifiers::key` for the arguments.
+pub fn key(code: u8, extended: bool, down: bool) {
+    if let Some(e) = MODIFIERS.with(|m| m.key(code & 0x7F, extended, down)) {
+        route(e);
     }
 }
 
-fn ps2_read() -> Option<u8> {
-    (0..100_000).find_map(|_| unsafe { (inb(0x64) & 1 != 0).then(|| inb(0x60)) })
-}
-
-fn mouse_cmd(cmd: u8) {
-    ps2_wait_write();
-    unsafe { outb(0x64, 0xD4) };
-    ps2_wait_write();
-    unsafe { outb(0x60, cmd) };
-    ps2_read(); // ACK
-}
-
-// VMware-compatible absolute pointer ("vmmouse"), provided by QEMU on PCs.
-// It reports where the host cursor is, so the pointer needs no grabbing and
-// never drifts from the host's cursor, also when QEMU zooms the picture.
-const VMPORT_MAGIC: u32 = 0x564D_5868;
-const VMPORT_PORT: u32 = 0x5658;
-const VMMOUSE_DATA: u32 = 39;
-const VMMOUSE_STATUS: u32 = 40;
-const VMMOUSE_COMMAND: u32 = 41;
-
-/// One call through the hypervisor's "backdoor" port; returns eax..edx.
-fn vmport(cmd: u32, arg: u32) -> [u32; 4] {
-    let (mut a, mut b, mut c, mut d) = (VMPORT_MAGIC, arg as u64, cmd, VMPORT_PORT);
-    // SAFETY: on real hardware this is an ordinary read of an unused port;
-    // rbx is swapped in and out because the compiler reserves it
-    unsafe {
-        asm!("xchg rbx, {b}", "in eax, dx", "xchg rbx, {b}",
-             b = inout(reg) b, inout("eax") a, inout("ecx") c, inout("edx") d,
-             options(nomem, nostack, preserves_flags));
-    }
-    [a, b as u32, c, d]
-}
-
-fn vmmouse_init() {
-    if vmport(10, 0)[1] != VMPORT_MAGIC {
-        return; // GETVERSION: no such hypervisor
-    }
-    vmport(VMMOUSE_COMMAND, 0x4541_4552); // READ_ID
-    let status = vmport(VMMOUSE_STATUS, 0)[0];
-    if status & 0xFFFF_0000 == 0xFFFF_0000 || status & 0xFFFF == 0 {
-        return;
-    }
-    if vmport(VMMOUSE_DATA, 1)[0] != 0x3442_554A {
-        return;
-    }
-    vmport(VMMOUSE_COMMAND, 0x5342_4152); // REQUEST_ABSOLUTE
-    VMMOUSE.store(true, Ordering::Relaxed);
-}
-
-/// The host pointer is followed exactly (vmmouse).
-pub fn mouse_absolute() -> bool {
-    VMMOUSE.load(Ordering::Relaxed)
-}
-
-fn vmmouse_poll() {
-    for _ in 0..64 {
-        let status = vmport(VMMOUSE_STATUS, 0)[0];
-        if status & 0xFFFF_0000 == 0xFFFF_0000 {
-            // error: start over
-            VMMOUSE.store(false, Ordering::Relaxed);
-            vmmouse_init();
-            return;
-        }
-        if status & 0xFFFF < 4 {
-            return;
-        }
-        let r = vmport(VMMOUSE_DATA, 4);
-        let bit = |mask: u32, button: i32| if r[0] & mask != 0 { button } else { 0 };
-        let buttons = bit(0x20, 1) | bit(0x10, 2) | bit(0x08, 4);
-        if wm::active() {
-            wm::mouse_abs((r[1] & 0xFFFF) as i32, (r[2] & 0xFFFF) as i32, buttons, r[3] as i8 as i32);
-        }
-    }
-}
-
-pub fn mouse_init() {
-    ps2_wait_write();
-    unsafe { outb(0x64, 0xA8) }; // enable the auxiliary port
-    ps2_wait_write();
-    unsafe { outb(0x64, 0x20) };
-    let Some(config) = ps2_read() else { return };
-    ps2_wait_write();
-    unsafe { outb(0x64, 0x60) };
-    ps2_wait_write();
-    unsafe { outb(0x60, config & !0x20) }; // enable the mouse clock
-    mouse_cmd(0xF6); // defaults
-    mouse_cmd(0xF4); // start reporting
-    vmmouse_init();
-}
-
-/// Drains the serial line, the keyboard and the mouse. Called from the
+/// Drains the serial line, the keyboard and the pointer. Called from the
 /// scheduler's tick.
 pub fn poll_input() {
     // When the queue is nearly full, leave bytes in the UART so the sender is held back.
     let room = || CONSOLE.with(|c| c.tty(SHELL_TTY).is_some_and(|t| t.input.len() < INPUT_QUEUE - 8));
-    while room() && unsafe { inb(COM1 + 5) } & 1 != 0 {
-        let c = match unsafe { inb(COM1) } {
-            b'\r' => b'\n',
-            127 => 8,
-            c => c,
+    while room() {
+        let c = match serial::get() {
+            None => break,
+            Some(b'\r') => b'\n',
+            Some(127) => 8,
+            Some(c) => c,
         };
         if c != 0 {
             tty_input(SHELL_TTY, &[c]);
         }
     }
-    for _ in 0..64 {
-        let status = unsafe { inb(0x64) };
-        if status & 1 == 0 {
-            break;
-        }
-        let b = unsafe { inb(0x60) };
-        if status & 0x20 == 0 {
-            if let Some(e) = DEVICES.with(|d| d.scancode(b)) {
-                route(e);
-            }
-        } else if !mouse_absolute() {
-            // (with vmmouse these are only wake-up packets)
-            if let Some((dx, dy, buttons)) = DEVICES.with(|d| d.mouse_byte(b)) {
-                if wm::active() {
-                    wm::mouse(dx, dy, buttons);
-                }
-            }
-        }
-    }
-    if mouse_absolute() {
-        vmmouse_poll();
-    }
+    input::poll();
 }
 
 // ----------------------------------------------------------------- input
@@ -1091,7 +907,7 @@ impl Editor {
                 // say why, briefly
                 let why = result.err().unwrap_or_else(|| "no conversion".into());
                 self.draw(alloc::format!(" ({why})").as_bytes());
-                cpu::sleep_ms(1200);
+                sched::sleep_ms(1200);
             }
         }
         self.draw(b"");

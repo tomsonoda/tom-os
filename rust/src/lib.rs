@@ -6,10 +6,12 @@ extern crate alloc;
 
 pub mod rt;
 
+mod arch;
+pub(crate) use arch::{cpu, sound};
+
 mod agent;
 mod apps;
 mod console;
-mod cpu;
 mod fs;
 mod gfx;
 mod home;
@@ -18,12 +20,11 @@ mod json;
 mod lua;
 mod mem;
 mod net;
-mod pci;
 mod run;
 mod sched;
 mod shell;
-mod sound;
 mod start;
 mod tcp;
+mod virtio;
 mod virtio_net;
 mod wm;
