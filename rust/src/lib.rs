@@ -8,10 +8,13 @@ pub mod rt;
 mod sys;
 
 mod agent;
+mod apps;
+mod fs;
 mod http;
 mod json;
 mod lua;
 mod net;
 mod pci;
+mod shell;
 mod tcp;
 mod virtio_net;

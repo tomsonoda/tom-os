@@ -6,7 +6,6 @@
 //! are processed.
 
 use alloc::vec::Vec;
-use core::ffi::c_char;
 
 use crate::rt::KCell;
 use crate::sys;
@@ -281,6 +280,11 @@ pub fn up() -> bool {
     NET.with(|n| n.up())
 }
 
+/// The card's hardware address and our IP address, if there is a card.
+pub fn address() -> Option<([u8; 6], u32)> {
+    NET.with(|n| n.up().then_some((n.mac, n.ip)))
+}
+
 /// Finds the hardware address packets for `dst` go to, asking on the
 /// network if needed, so that the first packet is not lost.
 pub fn resolve(dst: u32) -> Result<(), NetError> {
@@ -335,25 +339,4 @@ pub extern "C" fn net_up() -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn net_poll() {
     poll();
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn net_ip() -> u32 {
-    NET.with(|n| n.ip)
-}
-
-/// # Safety
-/// `mac` must point to 6 writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nic_mac(mac: *mut u8) {
-    let m = NET.with(|n| n.mac);
-    unsafe { core::ptr::copy_nonoverlapping(m.as_ptr(), mac, 6) };
-}
-
-/// # Safety
-/// `out` must point to 16 writable bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn net_fmt_ip(ip: u32, out: *mut c_char) {
-    let text = alloc::format!("{}.{}.{}.{}\0", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255);
-    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), out as *mut u8, text.len()) };
 }

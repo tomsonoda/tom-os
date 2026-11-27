@@ -216,6 +216,8 @@ window *wm_create(const char *title, tty *t, thread *owner);
 void wm_destroy(window *w);
 int wm_set_canvas(window *w, int width, int height);
 void wm_set_text(window *w);
+int wm_is_canvas(const window *w);        /* for Rust, which does not know the struct */
+void wm_set_owner(window *w, thread *owner);
 void wm_present(window *w);
 void wm_set_title(window *w, const char *title);
 void wm_key(int code, int down, int alt, const char *chars);
@@ -231,6 +233,7 @@ void wm_ime_changed(void);   /* redraw the input-method indicator */
 homeview *home_create(tty *t);
 void home_feed(homeview *h, const char *s, size_t n);
 void home_add_user(homeview *h, const char *line);
+void home_add_user_line(const char *line); /* on the calling thread's home view, if any */
 /* The line being typed: text, cursor (byte offset), and the composition at the cursor. */
 void home_set_input(homeview *h, const char *line, size_t n, size_t cur, const char *comp, size_t cn,
                     int converted);
@@ -251,21 +254,10 @@ size_t mem_used(void);
 const char *boot_cmdline(void);
 int cmdline_get(const char *key, char *out, size_t n);
 
-/* ---- network (rust/src/net.rs; TCP and the driver are used from Rust only) ---- */
+/* ---- network (rust/src/net.rs) ---- */
 void net_init(void);
 int net_up(void);
 void net_poll(void);
-u32 net_ip(void);
-void net_fmt_ip(u32 ip, char out[16]);
-void nic_mac(u8 mac[6]);
-
-/* ---- RAM filesystem (fs/ramfs.c) ---- */
-int fs_write(const char *path, const char *data, size_t len);
-const char *fs_read(const char *path, size_t *len); /* NULL if missing */
-int fs_delete(const char *path);
-int fs_rename(const char *from, const char *to);
-/* Iterate: pass *it = NULL first; returns name or NULL at the end. */
-const char *fs_next(void **it, size_t *len);
 
 /* ---- Lua runtime (lua/lbind.c) ---- */
 /* Runs a chunk in a fresh Lua state. Interactive runs own the console; others
@@ -274,19 +266,8 @@ const char *fs_next(void **it, size_t *len);
 int lua_run(const char *name, const char *code, size_t len, int interactive, int timeout_ms,
             strbuf *out, strbuf *err);
 
-/* ---- agent ---- */
-void shell_run(void);                    /* agent/shell.c */
-void agent_reset(void);                  /* rust/src/agent.rs */
-void agent_turn(const char *user_text);
-const char *agent_setting(const char *key);         /* "llm", "model", "path" */
-int agent_set(const char *key, const char *value);  /* 0 on success */
-/* agent/apps.c */
-/* Starts an app. Text mode: runs it in the foreground; returns 0, or -1 with
- * the error. Graphics mode: runs it in its own window; returns 1 once it has
- * been running for a moment, 0 if it already finished, -1 on error. */
-int app_launch(const char *name_or_path, strbuf *err);
-void app_list(void);
-int app_kill(int id);
+/* ---- shell (rust/src/shell.rs) ---- */
+void shell_run(void);
 
 int kprintf(const char *fmt, ...);
 

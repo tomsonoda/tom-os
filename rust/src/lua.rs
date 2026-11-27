@@ -16,7 +16,8 @@ use core::time::Duration;
 
 use remedy_lua::{Error, Interrupt, IoError, Libs, LimitKind, Limits, Lua, ModuleSource, Stream, Value};
 
-use crate::rt::{console, cstr, read_file, write_file};
+use crate::fs;
+use crate::rt::{console, cstr};
 use crate::sys;
 
 // -------------------------------------------------------------- arguments
@@ -165,7 +166,7 @@ struct RamFile {
 impl RamFile {
     fn save(&mut self) {
         if self.dirty {
-            write_file(&self.path, &self.data);
+            fs::write(&self.path, &self.data);
             self.dirty = false;
         }
     }
@@ -234,7 +235,7 @@ impl Drop for RamFile {
 fn open_file(path: &str, mode: &str) -> Result<Box<dyn Stream>, IoError> {
     let kind = mode.as_bytes().first().copied().unwrap_or(b'r');
     let plus = mode.contains('+');
-    let existing = read_file(path.as_bytes());
+    let existing = fs::read(path.as_bytes());
     if kind == b'r' && existing.is_none() {
         return Err(IoError::new("No such file or directory", 2));
     }
@@ -257,7 +258,7 @@ fn open_file(path: &str, mode: &str) -> Result<Box<dyn Stream>, IoError> {
 fn find_module(name: &str) -> Option<ModuleSource> {
     let rel = name.replace('.', "/");
     for path in [format!("{rel}.lua"), format!("apps/{rel}.lua"), format!("lib/{rel}.lua"), rel.clone()] {
-        if let Some(code) = read_file(path.as_bytes()) {
+        if let Some(code) = fs::read(path.as_bytes()) {
             return Some(ModuleSource::new(code, format!("@{path}")));
         }
     }
@@ -326,26 +327,18 @@ fn register_tomos(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     lua.register("tomos.time_ms", |_, _| Ok(vec![Value::Int(unsafe { sys::time_ms() } as i64)]))?;
     lua.register("tomos.files", |lua, _| {
         let t = lua.create_table()?;
-        let mut it: *mut c_void = core::ptr::null_mut();
-        let mut n = 1;
-        loop {
-            let name = unsafe { sys::fs_next(&mut it, core::ptr::null_mut()) };
-            if name.is_null() {
-                break;
-            }
-            let s = unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes();
-            let v = lua.create_string(s)?;
-            lua.table_set(t, Value::Int(n), v)?;
-            n += 1;
+        for (n, (name, _)) in fs::list().into_iter().enumerate() {
+            let v = lua.create_string(name)?;
+            lua.table_set(t, Value::Int(n as i64 + 1), v)?;
         }
         Ok(vec![Value::Table(t)])
     })?;
-    lua.register("tomos.read_file", |lua, a| match read_file(&bytes(lua, a, 0)?) {
+    lua.register("tomos.read_file", |lua, a| match fs::read(&bytes(lua, a, 0)?) {
         Some(d) => Ok(vec![lua.create_string(d)?]),
         None => Ok(vec![Value::Nil]),
     })?;
     lua.register("tomos.write_file", |lua, a| {
-        Ok(vec![Value::Bool(write_file(&bytes(lua, a, 0)?, &bytes(lua, a, 1)?))])
+        Ok(vec![Value::Bool(fs::write(&bytes(lua, a, 0)?, &bytes(lua, a, 1)?))])
     })?;
     Ok(())
 }
@@ -358,8 +351,7 @@ fn register_os(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     })?;
     lua.register("os.remove", |lua, a| {
         let path = bytes(lua, a, 0)?;
-        let p = cstr(&path);
-        if unsafe { sys::fs_delete(p.as_ptr() as *const c_char) } == 0 {
+        if fs::delete(&path) {
             return Ok(vec![Value::Bool(true)]);
         }
         let msg = lua.create_string(format!("{}: No such file or directory", String::from_utf8_lossy(&path)))?;
@@ -367,8 +359,7 @@ fn register_os(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     })?;
     lua.register("os.rename", |lua, a| {
         let (from, to) = (bytes(lua, a, 0)?, bytes(lua, a, 1)?);
-        let (f, t) = (cstr(&from), cstr(&to));
-        if unsafe { sys::fs_rename(f.as_ptr() as *const c_char, t.as_ptr() as *const c_char) } == 0 {
+        if fs::rename(&from, &to) {
             return Ok(vec![Value::Bool(true)]);
         }
         let msg = lua.create_string(format!("{}: No such file or directory", String::from_utf8_lossy(&from)))?;

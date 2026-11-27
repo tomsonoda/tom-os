@@ -8,11 +8,6 @@ unsafe extern "C" {
     pub fn console_write(s: *const u8, n: usize);
     pub fn time_ms() -> u64;
     pub fn wm_active() -> i32;
-    pub fn fs_read(path: *const c_char, len: *mut usize) -> *const u8;
-    pub fn fs_write(path: *const c_char, data: *const u8, len: usize) -> i32;
-    pub fn fs_delete(path: *const c_char) -> i32;
-    pub fn fs_rename(from: *const c_char, to: *const c_char) -> i32;
-    pub fn fs_next(it: *mut *mut c_void, len: *mut usize) -> *const c_char;
     pub fn sb_put(b: *mut c_void, s: *const u8, n: usize);
 
     pub fn host_poll() -> i32;
@@ -49,8 +44,32 @@ unsafe extern "C" {
     pub fn cpu_idle();
     pub fn cmdline_get(key: *const c_char, out: *mut u8, n: usize) -> i32;
 
-    // apps
+    // apps, threads, windows
     pub fn lua_run(name: *const c_char, code: *const u8, len: usize, interactive: i32, timeout_ms: i32,
                    out: *mut c_void, err: *mut c_void) -> i32;
-    pub fn app_launch(name: *const c_char, err: *mut c_void) -> i32;
+    pub fn thread_spawn(f: extern "C" fn(*mut c_void), arg: *mut c_void, tty: *mut c_void) -> *mut c_void;
+    pub fn thread_kill(t: *mut c_void);
+    pub fn thread_killed() -> i32;
+    pub fn thread_set_window(w: *mut c_void);
+    pub fn tty_create(cols: i32, rows: i32) -> *mut c_void;
+    pub fn tty_destroy(t: *mut c_void);
+    pub fn console_getc(timeout_ms: i32) -> i32;
+    pub fn console_readline(buf: *mut u8, max: usize, history: i32) -> i32;
+    pub fn wm_create(title: *const c_char, tty: *mut c_void, owner: *mut c_void) -> *mut c_void;
+    pub fn wm_destroy(w: *mut c_void);
+    pub fn wm_set_text(w: *mut c_void);
+    pub fn wm_is_canvas(w: *mut c_void) -> i32;
+    pub fn wm_set_owner(w: *mut c_void, thread: *mut c_void);
+    pub fn wm_layout() -> i32;
+    pub fn wm_set_layout(layout: i32);
+    pub fn wm_display_w() -> i32;
+    pub fn wm_display_h() -> i32;
+    pub fn wm_scale() -> i32;
+    pub fn wm_set_display(w: i32, h: i32, scale: i32, err: *mut c_void) -> i32;
+    pub fn home_add_user_line(line: *const c_char);
+    pub fn mouse_absolute() -> i32;
+    pub fn mem_used() -> usize;
+    pub fn mem_total() -> usize;
+    pub fn cpu_poweroff();
+    pub fn cpu_reboot();
 }

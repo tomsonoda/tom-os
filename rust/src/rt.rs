@@ -55,6 +55,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     unsafe { sys::host_panic(b.0.as_ptr(), b.1) }
 }
 
+/// Same as TOMOS_VERSION in kernel/tomos.h.
+pub const VERSION: &str = "0.1";
+
 pub fn console(bytes: &[u8]) {
     unsafe { sys::console_write(bytes.as_ptr(), bytes.len()) }
 }
@@ -66,21 +69,6 @@ pub fn cstr(bytes: &[u8]) -> Vec<u8> {
     v.extend_from_slice(&bytes[..end]);
     v.push(0);
     v
-}
-
-pub fn read_file(path: &[u8]) -> Option<Vec<u8>> {
-    let p = cstr(path);
-    let mut len = 0usize;
-    let data = unsafe { sys::fs_read(p.as_ptr() as *const c_char, &mut len) };
-    if data.is_null() {
-        return None;
-    }
-    Some(unsafe { core::slice::from_raw_parts(data, len) }.to_vec())
-}
-
-pub fn write_file(path: &[u8], data: &[u8]) -> bool {
-    let p = cstr(path);
-    unsafe { sys::fs_write(p.as_ptr() as *const c_char, data.as_ptr(), data.len()) == 0 }
 }
 
 /// Text from C: the bytes of a NUL-terminated string (empty for NULL).
@@ -108,6 +96,7 @@ pub mod ui {
     pub const NOTE: &str = "\x1b[?7102h";
     pub const ERROR: &str = "\x1b[?7103h";
     pub const STATUS: &str = "\x1b[?7104h";
+    pub const HIDE: &str = "\x1b[?7105h";
     pub const END: &str = "\x1b[?7100l";
 }
 

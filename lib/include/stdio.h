@@ -19,7 +19,6 @@ int puts(const char *s);
 size_t fwrite(const void *p, size_t sz, size_t n, FILE *f);
 size_t fread(void *p, size_t sz, size_t n, FILE *f);
 int fflush(FILE *f);
-FILE *fopen(const char *path, const char *mode);
 FILE *freopen(const char *path, const char *mode, FILE *f);
 int fclose(FILE *f);
 int getc(FILE *f);

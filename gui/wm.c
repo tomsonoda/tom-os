@@ -1100,3 +1100,9 @@ int wm_init(int w, int h, int sc) {
     damage_all();
     return 0;
 }
+
+int wm_is_canvas(const window *w) { return w && w->canvas; }
+
+void wm_set_owner(window *w, thread *owner) {
+    if (w) w->owner = owner;
+}

@@ -477,3 +477,8 @@ void home_render(homeview *h, surface *s) {
     }
     draw_input(h, s, col_x, col_w, box_y, box_h, inner_w);
 }
+
+void home_add_user_line(const char *line) {
+    tty *t = thread_tty();
+    if (t && t->home) home_add_user(t->home, line);
+}

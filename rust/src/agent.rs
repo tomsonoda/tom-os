@@ -9,7 +9,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::json::{self, Json};
 use crate::rt::{self, KCell, StrBuf, console, cstr, lossy, ui};
-use crate::{http, kprint, net, sys, tcp};
+use crate::apps::{self, Started};
+use crate::{fs, http, kprint, net, sys, tcp};
 
 const MAX_STEPS: usize = 24;
 const TOOL_RESULT_MAX: usize = 12000;
@@ -38,92 +39,47 @@ struct Message {
 /// the cell while it runs.
 static CONVERSATION: KCell<Vec<Message>> = KCell::new(Vec::new());
 
-#[unsafe(no_mangle)]
-pub extern "C" fn agent_reset() {
+/// Forgets the conversation.
+pub fn reset() {
     CONVERSATION.with(|c| c.clear());
 }
 
 // -------------------------------------------------------------- settings
 
 /// LLM connection settings: defaults, overridden by kernel arguments at
-/// boot and by the /set command at run time. Values are NUL-terminated so C
-/// can read them in place.
-struct Setting {
-    key: &'static str,
-    value: [u8; 128],
-}
+/// boot and by the /set command at run time.
+const DEFAULTS: [(&str, &str); 3] = [("llm", "10.0.2.2:8080"), ("model", "default"), ("path", "/v1/chat/completions")];
 
-const fn fixed(s: &str) -> [u8; 128] {
-    let mut out = [0u8; 128];
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        out[i] = b[i];
-        i += 1;
-    }
-    out
-}
+static SETTINGS: KCell<Option<[Vec<u8>; 3]>> = KCell::new(None);
 
-struct Settings {
-    loaded: bool,
-    list: [Setting; 3],
-}
-
-static SETTINGS: KCell<Settings> = KCell::new(Settings {
-    loaded: false,
-    list: [
-        Setting { key: "llm", value: fixed("10.0.2.2:8080") },
-        Setting { key: "model", value: fixed("default") },
-        Setting { key: "path", value: fixed("/v1/chat/completions") },
-    ],
-});
-
-fn with_settings<R>(f: impl FnOnce(&mut [Setting; 3]) -> R) -> R {
+fn with_settings<R>(f: impl FnOnce(&mut [Vec<u8>; 3]) -> R) -> R {
     SETTINGS.with(|s| {
-        if !s.loaded {
-            s.loaded = true;
-            for item in s.list.iter_mut() {
-                let key = cstr(item.key.as_bytes());
-                unsafe { sys::cmdline_get(key.as_ptr() as *const c_char, item.value.as_mut_ptr(), item.value.len()) };
-            }
-        }
-        f(&mut s.list)
+        f(s.get_or_insert_with(|| {
+            DEFAULTS.map(|(key, default)| {
+                let mut v = [0u8; 128];
+                let key = cstr(key.as_bytes());
+                unsafe { sys::cmdline_get(key.as_ptr() as *const c_char, v.as_mut_ptr(), v.len()) };
+                let end = v.iter().position(|&b| b == 0).unwrap_or(v.len());
+                if end > 0 { v[..end].to_vec() } else { default.as_bytes().to_vec() }
+            })
+        }))
     })
 }
 
-fn setting(key: &str) -> Vec<u8> {
-    with_settings(|list| {
-        list.iter().find(|s| s.key == key).map_or(Vec::new(), |s| {
-            let end = s.value.iter().position(|&b| b == 0).unwrap_or(s.value.len());
-            s.value[..end].to_vec()
-        })
-    })
+/// The value of "llm", "model" or "path".
+pub fn setting(key: &str) -> Vec<u8> {
+    let Some(i) = DEFAULTS.iter().position(|d| d.0 == key) else { return Vec::new() };
+    with_settings(|values| values[i].clone())
 }
 
-/// # Safety
-/// `key` must be a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn agent_setting(key: *const c_char) -> *const c_char {
-    let key = unsafe { rt::from_c(key) };
-    with_settings(|list| {
-        list.iter().find(|s| s.key.as_bytes() == key).map_or(c"".as_ptr(), |s| s.value.as_ptr() as *const c_char)
-    })
-}
-
-/// # Safety
-/// `key` and `value` must be NUL-terminated strings.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn agent_set(key: *const c_char, value: *const c_char) -> i32 {
-    let (key, value) = unsafe { (rt::from_c(key), rt::from_c(value)) };
-    with_settings(|list| {
-        let Some(s) = list.iter_mut().find(|s| s.key.as_bytes() == key) else { return -1 };
-        if value.is_empty() || value.len() >= s.value.len() {
-            return -1;
-        }
-        s.value = [0; 128];
-        s.value[..value.len()].copy_from_slice(value);
-        0
-    })
+/// Changes a setting; false if the key or the value is not acceptable.
+pub fn set(key: &str, value: &[u8]) -> bool {
+    let Some(i) = DEFAULTS.iter().position(|d| d.0 == key) else { return false };
+    if value.is_empty() || value.len() >= 128 {
+        return false;
+    }
+    with_settings(|values| values[i] = value.to_vec());
+    true
 }
 
 /// The LLM server as (address, port, "ip:port" text), or an error message.
@@ -260,7 +216,7 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
     let mut out = match call.name.as_slice() {
         b"write_file" => match (path, args.get("content").and_then(Json::as_str)) {
             (Some(p), Some(content)) => {
-                if rt::write_file(p, content) {
+                if fs::write(p, content) {
                     note(&format!("  [write_file] {shown} ({} bytes)", content.len()));
                     format!("wrote {} bytes to {shown}", content.len()).into_bytes()
                 } else {
@@ -271,19 +227,13 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
         },
         b"read_file" => {
             note(&format!("  [read_file] {shown}"));
-            path.and_then(rt::read_file).unwrap_or_else(missing)
+            path.and_then(fs::read).unwrap_or_else(missing)
         }
         b"list_files" => {
             note("  [list_files]");
             let mut list = Vec::new();
-            let mut it: *mut c_void = core::ptr::null_mut();
-            loop {
-                let mut len = 0usize;
-                let name = unsafe { sys::fs_next(&mut it, &mut len) };
-                if name.is_null() {
-                    break;
-                }
-                list.extend_from_slice(unsafe { rt::from_c(name) });
+            for (name, len) in fs::list() {
+                list.extend_from_slice(&name);
                 list.extend_from_slice(format!(" ({len} bytes)\n").as_bytes());
             }
             if list.is_empty() { b"(no files)".to_vec() } else { list }
@@ -291,7 +241,7 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
         b"delete_file" => {
             note(&format!("  [delete_file] {shown}"));
             match path {
-                Some(p) if unsafe { sys::fs_delete(cstr(p).as_ptr() as *const c_char) } == 0 => {
+                Some(p) if fs::delete(p) => {
                     format!("deleted {shown}").into_bytes()
                 }
                 _ => missing(),
@@ -321,12 +271,10 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
             None => b"error: 'path' is required".to_vec(),
             Some(p) => {
                 note(&format!("  [launch_app] {shown}"));
-                let mut err = StrBuf::new();
-                match unsafe { sys::app_launch(cstr(p).as_ptr() as *const c_char, err.as_ptr()) } {
-                    0 => b"the app ran and exited normally".to_vec(),
-                    1 => b"the app started without errors and is running in its own window".to_vec(),
-                    _ => {
-                        let e = lossy(err.as_bytes());
+                match apps::launch(p) {
+                    Ok(Started::Finished) => b"the app ran and exited normally".to_vec(),
+                    Ok(Started::Running) => b"the app started without errors and is running in its own window".to_vec(),
+                    Err(e) => {
                         kprint!("{}  [app error] {e}\n{}", ui::ERROR, ui::END);
                         format!("the app stopped with an error: {e}").into_bytes()
                     }
@@ -445,7 +393,7 @@ fn show_waiting() {
     kprint!("{}\r\x1b[2m({what}... {secs} s, Ctrl-C to cancel)\x1b[0m\x1b[K{}", ui::STATUS, ui::END);
 }
 
-fn turn(conv: &mut Vec<Message>, user_text: &[u8]) {
+fn run_turn(conv: &mut Vec<Message>, user_text: &[u8]) {
     let mark = conv.len();
     conv.push(Message { role: "user", content: Some(user_text.to_vec()), calls: Vec::new(), tool_call_id: None });
     unsafe { sys::console_clear_break() };
@@ -485,11 +433,7 @@ fn turn(conv: &mut Vec<Message>, user_text: &[u8]) {
 
 /// One request from the user: the model answers, possibly through several
 /// rounds of tool calls.
-///
-/// # Safety
-/// `user_text` must be a NUL-terminated string.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn agent_turn(user_text: *const c_char) {
+pub fn turn(user_text: &[u8]) {
     if !net::up() {
         kprint!(
             "{}[error] no network device found. Start QEMU with -netdev user,id=n0 -device virtio-net-pci,netdev=n0\n{}",
@@ -498,9 +442,8 @@ pub unsafe extern "C" fn agent_turn(user_text: *const c_char) {
         );
         return;
     }
-    let text = unsafe { rt::from_c(user_text) };
     // the conversation leaves the cell for the turn: no borrow is held while waiting
     let mut conv = CONVERSATION.with(core::mem::take);
-    turn(&mut conv, text);
+    run_turn(&mut conv, user_text);
     CONVERSATION.with(|c| *c = conv);
 }

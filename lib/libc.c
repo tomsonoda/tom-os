@@ -281,7 +281,7 @@ void sb_printf(strbuf *b, const char *fmt, ...) {
 
 char *sb_cstr(strbuf *b) { return b->p ? b->p : ""; }
 
-/* ---- stdio: stdout/stderr go to the console, files are read from the ramfs ---- */
+/* ---- stdio: stdout/stderr go to the console, there are no files ---- */
 struct FILE {
     int kind; /* 0 = ramfs reader, 1 = console */
     char *data;
@@ -291,25 +291,6 @@ struct FILE {
 
 static FILE f_stdout = {1, NULL, 0, 0, 0}, f_stderr = {1, NULL, 0, 0, 0}, f_stdin = {0, NULL, 0, 0, 1};
 FILE *stdin = &f_stdin, *stdout = &f_stdout, *stderr = &f_stderr;
-
-FILE *fopen(const char *path, const char *mode) {
-    size_t len;
-    const char *d;
-    if (mode[0] != 'r' || !(d = fs_read(path, &len))) {
-        errno = ENOENT;
-        return NULL;
-    }
-    FILE *f = calloc(1, sizeof *f);
-    if (!f) return NULL;
-    f->data = malloc(len + 1);
-    if (!f->data) {
-        free(f);
-        return NULL;
-    }
-    memcpy(f->data, d, len);
-    f->len = len;
-    return f;
-}
 
 FILE *freopen(const char *path, const char *mode, FILE *f) {
     (void)path;

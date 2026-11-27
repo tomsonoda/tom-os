@@ -42,7 +42,7 @@ CFLAGS := -std=gnu11 -O2 -g -ffreestanding -fno-stack-protector -fno-pic -fno-pi
           -nostdinc -isystem $(GCCINC) -isystem lib/include -D_LIBC_LIMITS_H_
 WARN   := -Wall -Wextra
 
-SRCS := $(wildcard kernel/*.c lib/*.c fs/*.c agent/*.c lua/*.c gui/*.c)
+SRCS := $(wildcard kernel/*.c lib/*.c lua/*.c gui/*.c)
 # The Rust part of the kernel: rust/ (agent, HTTP, JSON, Lua bindings) and
 # third_party/remedy-lua (the Lua interpreter), built by cargo into one
 # static library.
