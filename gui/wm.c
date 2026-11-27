@@ -34,13 +34,13 @@
 #define COL_TITLE_TEXT 0xFFFFFF
 #define COL_CLOSE 0xC8473E
 /* full-screen layout: soft, light bars matching the home screen */
-#define COL_BAR 0xF6F3EE
-#define COL_BAR_LINE 0xE4DED4
-#define COL_BAR_TEXT 0x2B2926
-#define COL_BAR_DIM 0x9A948B
-#define COL_PILL 0x3A3835
-#define COL_OVERVIEW 0xE6E0D6
-#define COL_ACCENT 0xD0794F
+#define COL_BAR 0xF2F6F5
+#define COL_BAR_LINE 0xDCE5E3
+#define COL_BAR_TEXT 0x1E2B2E
+#define COL_BAR_DIM 0x8A9A9C
+#define COL_PILL 0x24383B
+#define COL_OVERVIEW 0xDDE8E6
+#define COL_ACCENT 0x0E9F8E
 #define COL_APP_BG 0x000000
 
 static const u32 palette[16] = {

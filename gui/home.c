@@ -18,18 +18,19 @@ enum { H_NOTE, H_USER, H_REPLY, H_ERROR };
 #define MAX_COL 760
 
 /* colours */
-#define C_BG 0xF6F3EE
-#define C_TEXT 0x2B2926
-#define C_MUTED 0x8C877F
-#define C_ACCENT 0xD0794F
-#define C_USER 0xE9E2D6
-#define C_NOTE_BG 0xEEE9E1
-#define C_ERROR 0xB8473B
+#define C_BG 0xF2F6F5
+#define C_TEXT 0x1E2B2E
+#define C_MUTED 0x7A8B8E
+#define C_ACCENT 0x0E9F8E
+#define C_USER 0xD6EFEA
+#define C_NOTE_BG 0xE6EDEC
+#define C_ERROR 0xC2413B
 #define C_BOX 0xFFFFFF
-#define C_BOX_LINE 0xDCD4C8
-#define C_COMP 0xF6DCCB
-#define C_CONV 0xCFE6E1
-#define C_SEND_OFF 0xDAD3C7
+#define C_BOX_LINE 0xCFDAD8
+#define C_COMP 0xFFE9A8
+#define C_CONV 0xBFE8E0
+#define C_SPARK 0xFFC53D /* the dot in the logo */
+#define C_SEND_OFF 0xCBD6D4
 
 typedef struct {
     int kind;
@@ -52,6 +53,7 @@ struct homeview {
     int esc, escn;
     char escbuf[24];
     strbuf input, comp;
+    size_t cur; /* cursor in `input`, where the composition sits */
     int converted;
     int scroll; /* pixels scrolled back from the newest text */
     int max_scroll;
@@ -154,8 +156,10 @@ void home_add_user(homeview *h, const char *line) {
     h->dirty = 1;
 }
 
-void home_set_input(homeview *h, const char *line, size_t n, const char *comp, size_t cn, int converted) {
-    if (h->input.len == n && h->comp.len == cn && h->converted == converted &&
+void home_set_input(homeview *h, const char *line, size_t n, size_t cur, const char *comp, size_t cn,
+                    int converted) {
+    if (cur > n) cur = n;
+    if (h->input.len == n && h->comp.len == cn && h->converted == converted && h->cur == cur &&
         (!n || !memcmp(h->input.p, line, n)) && (!cn || !memcmp(h->comp.p, comp, cn)))
         return;
     h->input.len = 0;
@@ -165,6 +169,7 @@ void home_set_input(homeview *h, const char *line, size_t n, const char *comp, s
     sb_put(&h->comp, comp, cn);
     if (!cn && h->comp.p) h->comp.p[0] = 0;
     h->converted = converted;
+    h->cur = cur;
     h->dirty = 1;
 }
 
@@ -263,6 +268,15 @@ static void draw_lines(surface *s, const char *t, size_t n, int x, int y, int ma
     }
 }
 
+/* The tom-os mark: a teal rounded square with a "t" and a yellow dot. */
+static void draw_logo(surface *s, int x, int y, int size) {
+    int big = size >= 32;
+    gfx_round(s, x, y, size, size, size * 5 / 16, C_ACCENT);
+    gfx_glyph(s, x + size / 2 - (big ? 9 : 5), y + size / 2 - (big ? 17 : 9), 't', 0xFFFFFF, -1, big ? 2 : 1);
+    int r = big ? 5 : 3;
+    gfx_circle(s, x + size - r - (big ? 5 : 2), y + r + (big ? 5 : 2), r, C_SPARK, 1);
+}
+
 /* Height and drawing of one entry; draw only when s is not NULL. */
 static int entry_block(surface *s, const entry *e, int col_x, int col_w, int y) {
     const char *t;
@@ -284,8 +298,7 @@ static int entry_block(surface *s, const entry *e, int col_x, int col_w, int y) 
         int maxw = col_w - 40;
         int lines = count_lines(t, n, maxw);
         if (s) {
-            gfx_circle(s, col_x + 12, y + 12, 12, C_ACCENT, 1);
-            gfx_glyph(s, col_x + 8, y + 4, 't', 0xFFFFFF, -1, 1);
+            draw_logo(s, col_x, y, 24);
             draw_lines(s, t, n, col_x + 40, y + 2, maxw, C_TEXT);
         }
         int h = lines * LINE_H + 4;
@@ -320,8 +333,7 @@ static void draw_welcome(homeview *h, surface *s, int col_x, int col_w, int bott
     static const char sub[] = "What would you like to make? Ask in any language.";
     int y = bottom / 2 - 70;
     if (y < 20) y = 20;
-    gfx_circle(s, s->w / 2, y - 30, 18, C_ACCENT, 1);
-    gfx_glyph(s, s->w / 2 - 8, y - 46, 't', 0xFFFFFF, -1, 2);
+    draw_logo(s, s->w / 2 - 20, y - 52, 40);
     gfx_text(s, (s->w - text_w(hello, sizeof hello - 1) * 2) / 2, y, hello, sizeof hello - 1, C_TEXT, -1, 2);
     gfx_text(s, (s->w - text_w(sub, sizeof sub - 1)) / 2, y + 44, sub, sizeof sub - 1, C_MUTED, -1, 1);
     /* suggestion chips, centred, in rows */
@@ -361,12 +373,14 @@ static void draw_input(homeview *h, surface *s, int col_x, int col_w, int box_y,
         gfx_text(s, tx, ty + 2, ph, sizeof ph - 1, C_MUTED, -1, 1);
         gfx_fill(s, tx, ty, 2, 18, C_ACCENT);
     } else {
-        /* the line, then the composition highlighted, then the caret */
+        /* the line with the composition (highlighted) and the caret at the cursor */
         strbuf all;
         sb_init(&all);
-        sb_put(&all, sb_cstr(&h->input), h->input.len);
+        sb_put(&all, sb_cstr(&h->input), h->cur);
         size_t comp_from = all.len;
         sb_put(&all, sb_cstr(&h->comp), h->comp.len);
+        size_t caret = all.len;
+        sb_put(&all, sb_cstr(&h->input) + h->cur, h->input.len - h->cur);
         size_t pos = 0, st, len;
         int y = ty, cx = tx, cy = ty;
         while (next_line(all.p, all.len, &pos, inner_w, &st, &len)) {
@@ -375,18 +389,14 @@ static void draw_input(homeview *h, surface *s, int col_x, int col_w, int box_y,
                 u32 cp;
                 int b = utf8_decode(all.p + i, st + len - i, &cp);
                 int w = char_w(cp);
-                if (i >= comp_from) gfx_fill(s, x, y, w, 20, h->converted ? C_CONV : C_COMP);
+                if (i == caret) cx = x, cy = y;
+                if (i >= comp_from && i < caret) gfx_fill(s, x, y, w, 20, h->converted ? C_CONV : C_COMP);
                 gfx_text(s, x, y + 2, all.p + i, (size_t)b, C_TEXT, -1, 1);
                 x += w;
                 i += (size_t)b;
             }
-            cx = x;
-            cy = y;
+            if (caret >= st + len) cx = x, cy = y; /* at or after the end of this line */
             y += LINE_H;
-        }
-        if (all.len && all.p[all.len - 1] == '\n') {
-            cx = tx;
-            cy = y;
         }
         gfx_fill(s, cx, cy, 2, 18, C_ACCENT);
         sb_free(&all);

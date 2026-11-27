@@ -231,7 +231,9 @@ void wm_ime_changed(void);   /* redraw the input-method indicator */
 homeview *home_create(tty *t);
 void home_feed(homeview *h, const char *s, size_t n);
 void home_add_user(homeview *h, const char *line);
-void home_set_input(homeview *h, const char *line, size_t n, const char *comp, size_t cn, int converted);
+/* The line being typed: text, cursor (byte offset), and the composition at the cursor. */
+void home_set_input(homeview *h, const char *line, size_t n, size_t cur, const char *comp, size_t cn,
+                    int converted);
 void home_render(homeview *h, surface *s);
 int home_dirty(const homeview *h);
 void home_invalidate(homeview *h);

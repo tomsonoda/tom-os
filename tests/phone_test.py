@@ -20,9 +20,9 @@ from gui_test import Monitor, Pointer, Screen  # noqa: E402
 PROMPT = boot_test.PROMPT
 W, H = 1024, 768
 STATUS_H, BAR_H = 24, 28
-BAR, OVERVIEW, BLACK = 0xF6F3EE, 0xE6E0D6, 0x000000
-HOME = 0xF6F3EE      # the home screen background
-USER_BUBBLE, ACCENT = 0xE9E2D6, 0xD0794F
+BAR, OVERVIEW, BLACK = 0xF2F6F5, 0xDDE8E6, 0x000000
+HOME = 0xF2F6F5      # the home screen background
+USER_BUBBLE, ACCENT = 0xD6EFEA, 0x0E9F8E
 APP_BG = 0x205020  # the test app's background
 
 # A full-screen canvas app: green background, records every click (in its own

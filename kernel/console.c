@@ -348,6 +348,9 @@ static void ps2_scancode(u8 sc) {
         case 0x4D: chars = "\x1b[C"; break;
         case 0x4B: chars = "\x1b[D"; break;
         case 0x1C: chars = "\n"; break;
+        case 0x47: chars = "\x1b[H"; break;  /* Home */
+        case 0x4F: chars = "\x1b[F"; break;  /* End */
+        case 0x53: chars = "\x1b[3~"; break; /* Delete */
         }
         key_route(code | 0x80, down, chars);
         return;
@@ -611,48 +614,52 @@ static const char *const romaji[][2] = {
 
 static int is_romaji_char(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || strchr("-,.[]~?!/'", c); }
 
+/* The line being edited: text, cursor, and the Japanese composition that
+ * sits at the cursor until it is accepted. */
 typedef struct {
+    char *buf;
+    size_t n, cur, max;
     strbuf pre;     /* kana typed so far (UTF-8) */
     char rom[8];    /* romaji not yet turned into kana */
     int nrom;
     strbuf cand;    /* conversion shown instead of `pre` */
     int converted;
-    int shown;      /* columns the composition occupies on screen */
-} compose;
+    int back;       /* columns between the start of the line and the terminal cursor */
+} editor;
 
-static int composing(const compose *k) { return k->pre.len || k->nrom || k->converted; }
+static int composing(const editor *e) { return e->pre.len || e->nrom || e->converted; }
 
-static void rom_flush(compose *k) { /* end of input: a lone n is ん, other letters stay */
-    if (k->nrom == 1 && k->rom[0] == 'n') sb_puts(&k->pre, "ん");
-    else sb_put(&k->pre, k->rom, (size_t)k->nrom);
-    k->nrom = 0;
+static void rom_flush(editor *e) { /* end of input: a lone n is ん, other letters stay */
+    if (e->nrom == 1 && e->rom[0] == 'n') sb_puts(&e->pre, "ん");
+    else sb_put(&e->pre, e->rom, (size_t)e->nrom);
+    e->nrom = 0;
 }
 
-static void rom_feed(compose *k, char c) {
+static void rom_feed(editor *e, char c) {
     if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    if (k->nrom >= (int)sizeof k->rom - 1) rom_flush(k);
-    k->rom[k->nrom++] = c;
+    if (e->nrom >= (int)sizeof e->rom - 1) rom_flush(e);
+    e->rom[e->nrom++] = c;
     for (;;) {
-        k->rom[k->nrom] = 0;
+        e->rom[e->nrom] = 0;
         int prefix = 0;
         for (size_t i = 0; i < NROMAJI; i++) {
-            if (strcmp(romaji[i][0], k->rom) == 0) {
-                sb_puts(&k->pre, romaji[i][1]);
-                k->nrom = 0;
+            if (strcmp(romaji[i][0], e->rom) == 0) {
+                sb_puts(&e->pre, romaji[i][1]);
+                e->nrom = 0;
                 return;
             }
-            if (strncmp(romaji[i][0], k->rom, (size_t)k->nrom) == 0) prefix = 1;
+            if (strncmp(romaji[i][0], e->rom, (size_t)e->nrom) == 0) prefix = 1;
         }
-        if (prefix || !k->nrom) return;
-        char r0 = k->rom[0], r1 = k->nrom > 1 ? k->rom[1] : 0;
+        if (prefix || !e->nrom) return;
+        char r0 = e->rom[0], r1 = e->nrom > 1 ? e->rom[1] : 0;
         if (r0 == 'n' && r1 && !strchr("aiueoyn'", r1)) {
-            sb_puts(&k->pre, "ん"); /* n before a consonant */
+            sb_puts(&e->pre, "ん"); /* n before a consonant */
         } else if (r1 && r0 == r1 && !strchr("aiueon", r0) && r0 >= 'a' && r0 <= 'z') {
-            sb_puts(&k->pre, "っ"); /* doubled consonant */
+            sb_puts(&e->pre, "っ"); /* doubled consonant */
         } else {
-            sb_putc(&k->pre, r0); /* not romaji: keep the letter */
+            sb_putc(&e->pre, r0); /* not romaji: keep the letter */
         }
-        memmove(k->rom, k->rom + 1, (size_t)--k->nrom);
+        memmove(e->rom, e->rom + 1, (size_t)--e->nrom);
     }
 }
 
@@ -665,241 +672,306 @@ static void sb_pop_char(strbuf *b) {
     b->p[i] = 0;
 }
 
-static void compose_erase(compose *k) {
-    for (int i = 0; i < k->shown; i++) console_puts("\b");
-    if (k->shown) console_puts("\x1b[K");
-    k->shown = 0;
+static void composition_text(const editor *e, strbuf *out) {
+    if (e->converted) sb_put(out, sb_cstr((strbuf *)&e->cand), e->cand.len);
+    else {
+        sb_put(out, sb_cstr((strbuf *)&e->pre), e->pre.len);
+        sb_put(out, e->rom, (size_t)e->nrom);
+    }
 }
 
-static void compose_draw(compose *k, const char *note) {
-    compose_erase(k);
+/* The home screen shows the line in its input box. */
+static void ed_show(const editor *e) {
+    tty *t = thread_tty();
+    if (!t->home) return;
+    strbuf c;
+    sb_init(&c);
+    composition_text(e, &c);
+    home_set_input(t->home, e->buf, e->n, e->cur, sb_cstr(&c), c.len, e->converted);
+    sb_free(&c);
+}
+
+/* Redraws the line on the terminal: text before the cursor, the composition
+ * (highlighted), the rest, and the terminal cursor back in its place. */
+static void ed_draw(editor *e, const char *note) {
+    for (int i = 0; i < e->back; i++) console_puts("\b");
+    console_write(e->buf, e->cur);
+    int col = display_width(e->buf, e->cur);
     strbuf v;
     sb_init(&v);
-    if (k->converted) sb_puts(&v, sb_cstr(&k->cand));
-    else {
-        sb_puts(&v, sb_cstr(&k->pre));
-        sb_put(&v, k->rom, (size_t)k->nrom);
-    }
+    composition_text(e, &v);
     if (note) sb_puts(&v, note);
     if (v.len) {
-        console_puts(k->converted ? "\x1b[30;46m" : "\x1b[30;43m");
+        console_puts(e->converted ? "\x1b[30;46m" : "\x1b[30;43m");
         console_write(v.p, v.len);
         console_puts("\x1b[0m");
-        k->shown = display_width(v.p, v.len);
+        col += display_width(v.p, v.len);
     }
     sb_free(&v);
+    console_write(e->buf + e->cur, e->n - e->cur);
+    console_puts("\x1b[K");
+    for (int w = display_width(e->buf + e->cur, e->n - e->cur); w > 0; w--) console_puts("\b");
+    e->back = col;
 }
 
-/* Moves the composition into the line being edited. */
-static size_t compose_commit(compose *k, char *buf, size_t n, size_t max) {
-    rom_flush(k);
-    const strbuf *src = k->converted ? &k->cand : &k->pre;
-    compose_erase(k);
-    size_t len = src->len;
-    if (n + len > max - 1) len = max - 1 - n;
-    while (len && len < src->len && ((u8)src->p[len] & 0xC0) == 0x80) len--; /* whole characters */
-    memcpy(buf + n, sb_cstr((strbuf *)src), len);
-    console_write(buf + n, len);
-    k->pre.len = k->cand.len = 0;
-    k->converted = 0;
-    return n + len;
+static size_t prev_char(const editor *e, size_t i) {
+    if (i == 0) return 0;
+    i--;
+    while (i > 0 && ((u8)e->buf[i] & 0xC0) == 0x80) i--;
+    return i;
 }
 
-static void compose_convert(compose *k) {
-    rom_flush(k);
-    if (!k->pre.len) return;
+static size_t next_char(const editor *e, size_t i) {
+    if (i >= e->n) return e->n;
+    i++;
+    while (i < e->n && ((u8)e->buf[i] & 0xC0) == 0x80) i++;
+    return i;
+}
+
+static int ed_insert(editor *e, const char *s, size_t len) {
+    if (e->n + len > e->max - 1) return 0;
+    memmove(e->buf + e->cur + len, e->buf + e->cur, e->n - e->cur);
+    memcpy(e->buf + e->cur, s, len);
+    e->n += len;
+    e->cur += len;
+    return 1;
+}
+
+static void ed_delete(editor *e, size_t from, size_t to) {
+    memmove(e->buf + from, e->buf + to, e->n - to);
+    e->n -= to - from;
+    e->cur = from;
+}
+
+/* Moves the composition into the line at the cursor. */
+static void ed_commit(editor *e) {
+    rom_flush(e);
+    const strbuf *src = e->converted ? &e->cand : &e->pre;
+    size_t len = src->len, room = e->max - 1 - e->n;
+    if (len > room) { /* keep whole characters */
+        len = room;
+        while (len && ((u8)src->p[len] & 0xC0) == 0x80) len--;
+    }
+    if (len) ed_insert(e, src->p, len);
+    e->pre.len = e->cand.len = 0;
+    e->converted = 0;
+    ed_draw(e, NULL);
+}
+
+static void ed_convert(editor *e) {
+    rom_flush(e);
+    if (!e->pre.len) return;
     strbuf out, err;
     sb_init(&out);
     sb_init(&err);
-    char *avoid = k->converted ? strdup(sb_cstr(&k->cand)) : NULL;
-    k->converted = 0;
-    compose_draw(k, " …");
-    if (agent_convert_kana(sb_cstr(&k->pre), avoid, &out, &err) == 0 && out.len) {
-        k->cand.len = 0;
-        sb_puts(&k->cand, out.p);
-        k->converted = 1;
-        compose_draw(k, NULL);
-    } else {
-        compose_draw(k, NULL);
-        if (wm_active()) { /* show why, briefly, without disturbing the line */
-            compose_erase(k);
-            strbuf msg;
-            sb_init(&msg);
-            sb_printf(&msg, "\x1b[31m(%s)\x1b[0m", err.len ? err.p : "no conversion");
-            console_write(msg.p, msg.len);
-            int w = display_width(msg.p, msg.len) - 9; /* minus the colour codes */
-            sleep_ms(1200);
-            for (int i = 0; i < w; i++) console_puts("\b");
-            console_puts("\x1b[K");
-            compose_draw(k, NULL);
-        }
+    char *avoid = e->converted ? strdup(sb_cstr(&e->cand)) : NULL;
+    e->converted = 0;
+    ed_draw(e, " …");
+    if (agent_convert_kana(sb_cstr(&e->pre), avoid, &out, &err) == 0 && out.len) {
+        e->cand.len = 0;
+        sb_puts(&e->cand, out.p);
+        e->converted = 1;
+    } else { /* say why, briefly */
+        strbuf msg;
+        sb_init(&msg);
+        sb_printf(&msg, " (%s)", err.len ? err.p : "no conversion");
+        ed_draw(e, sb_cstr(&msg));
+        sb_free(&msg);
+        sleep_ms(1200);
     }
+    ed_draw(e, NULL);
     free(avoid);
     sb_free(&out);
     sb_free(&err);
 }
 
-static void compose_katakana(compose *k) {
-    rom_flush(k);
-    for (size_t i = 0; i + 2 < k->pre.len + 1 && i < k->pre.len;) {
+static void ed_katakana(editor *e) {
+    rom_flush(e);
+    for (size_t i = 0; i < e->pre.len;) {
         u32 cp;
-        int n = utf8_decode(k->pre.p + i, k->pre.len - i, &cp);
+        int n = utf8_decode(e->pre.p + i, e->pre.len - i, &cp);
         if (n == 3 && cp >= 0x3041 && cp <= 0x3096) { /* hiragana -> katakana: +0x60 */
             cp += 0x60;
-            k->pre.p[i] = (char)(0xE0 | (cp >> 12));
-            k->pre.p[i + 1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-            k->pre.p[i + 2] = (char)(0x80 | (cp & 0x3F));
+            e->pre.p[i] = (char)(0xE0 | (cp >> 12));
+            e->pre.p[i + 1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            e->pre.p[i + 2] = (char)(0x80 | (cp & 0x3F));
         }
         i += (size_t)n;
     }
 }
 
-/* The home screen shows the line being edited in its input box. */
-static void show_input(const char *buf, size_t n, const compose *k) {
-    tty *t = thread_tty();
-    if (!t->home) return;
-    strbuf c;
-    sb_init(&c);
-    if (k->converted) sb_put(&c, sb_cstr((strbuf *)&k->cand), k->cand.len);
-    else {
-        sb_put(&c, sb_cstr((strbuf *)&k->pre), k->pre.len);
-        sb_put(&c, k->rom, (size_t)k->nrom);
+/* Reads the rest of an escape sequence and returns the control key it stands
+ * for (arrows, Home, End, Delete), or -1. *lone is set for a bare Esc. */
+static int read_escape(int *lone) {
+    int c = console_getc(20);
+    *lone = c < 0;
+    if (c != '[' && c != 'O') return -1;
+    int param = 0;
+    for (;;) {
+        c = console_getc(20);
+        if (c < 0) return -1;
+        if (c >= '0' && c <= '9') param = param * 10 + (c - '0');
+        else if (c >= 0x40) break;
     }
-    home_set_input(t->home, buf, n, sb_cstr(&c), c.len, k->converted);
-    sb_free(&c);
+    switch (c) {
+    case 'A': return 0x10; /* up: Ctrl-P */
+    case 'B': return 0x0E; /* down: Ctrl-N */
+    case 'C': return 0x06; /* right: Ctrl-F */
+    case 'D': return 0x02; /* left: Ctrl-B */
+    case 'H': return 0x01; /* Home: Ctrl-A */
+    case 'F': return 0x05; /* End: Ctrl-E */
+    case '~':
+        if (param == 1 || param == 7) return 0x01;
+        if (param == 4 || param == 8) return 0x05;
+        if (param == 3) return 0x04; /* Delete: Ctrl-D */
+    }
+    return -1;
 }
 
+/* Line editor. Keys: left/right or Ctrl-B/F move, Home/End or Ctrl-A/E jump,
+ * Backspace and Delete (Ctrl-D) remove, Ctrl-K / Ctrl-U cut to the end /
+ * start, Ctrl-W removes a word, up/down or Ctrl-P/N walk the history. */
 int console_readline(char *buf, size_t max, int use_history) {
-    size_t n = 0;
+    editor e;
+    memset(&e, 0, sizeof e);
+    e.buf = buf;
+    e.max = max;
+    sb_init(&e.pre);
+    sb_init(&e.cand);
     int hpos = history_n;
-    compose k;
-    memset(&k, 0, sizeof k);
-    sb_init(&k.pre);
-    sb_init(&k.cand);
     int result;
     tty *self = thread_tty();
     int muted = self->home_mute;
     self->home_mute = 1;
     for (;;) {
-        show_input(buf, n, &k);
+        ed_show(&e);
         int c = console_getc(-1);
         if (c == KEY_BREAK) {
-            compose_erase(&k);
             console_puts("^C\n");
             result = KEY_BREAK;
             break;
         }
         if (c == 0x1D || c == 0x1E || c == 0x1F) { /* input method toggle / on / off */
             int on = c == 0x1D ? !ime_on : c == 0x1E;
-            if (!on && composing(&k)) n = compose_commit(&k, buf, n, max);
+            if (!on && composing(&e)) ed_commit(&e);
             ime_set(on);
             continue;
         }
-        if (composing(&k)) {
-            if (c == 0x1B) { /* Esc: back to kana, or drop the composition; ignore arrows */
-                int c2 = console_getc(20);
-                if (c2 == '[') {
-                    console_getc(20);
-                    continue;
+        if (composing(&e)) {
+            if (c == 0x1B) { /* Esc: back to kana, or drop the composition; arrows do nothing */
+                int lone;
+                read_escape(&lone);
+                if (lone) {
+                    if (e.converted) e.converted = 0;
+                    else {
+                        e.pre.len = 0;
+                        e.nrom = 0;
+                    }
+                    ed_draw(&e, NULL);
                 }
-                if (k.converted) k.converted = 0;
-                else {
-                    k.pre.len = 0;
-                    k.nrom = 0;
-                }
-                compose_draw(&k, NULL);
-                if (c2 < 0 || c2 == 0x1B) continue;
-                c = c2;
+                continue;
             }
-            if (k.converted) {
-                if (c == '\n') {
-                    n = compose_commit(&k, buf, n, max);
-                    continue;
-                }
-                if (c == '\b') {
-                    k.converted = 0;
-                    compose_draw(&k, NULL);
-                    continue;
-                }
-                if (c == ' ') {
-                    compose_convert(&k); /* another candidate */
-                    continue;
-                }
-                n = compose_commit(&k, buf, n, max); /* typing on accepts the conversion */
-            } else if (composing(&k)) {
-                if (c == '\n') {
-                    n = compose_commit(&k, buf, n, max);
-                    continue;
-                }
-                if (c == '\b') {
-                    if (k.nrom) k.nrom--;
-                    else sb_pop_char(&k.pre);
-                    compose_draw(&k, NULL);
-                    continue;
-                }
-                if (c == ' ') {
-                    compose_convert(&k);
-                    continue;
-                }
-                if (c == 0x0B) { /* Ctrl+K: katakana */
-                    compose_katakana(&k);
-                    compose_draw(&k, NULL);
-                    continue;
-                }
-                if (!(ime_on && is_romaji_char(c))) n = compose_commit(&k, buf, n, max);
+            if (c == '\n') {
+                ed_commit(&e);
+                continue;
             }
+            if (c == '\b') {
+                if (e.converted) e.converted = 0;
+                else if (e.nrom) e.nrom--;
+                else sb_pop_char(&e.pre);
+                ed_draw(&e, NULL);
+                continue;
+            }
+            if (c == ' ') {
+                ed_convert(&e); /* again: another candidate */
+                continue;
+            }
+            if (c == 0x0B && !e.converted) { /* Ctrl+K: katakana */
+                ed_katakana(&e);
+                ed_draw(&e, NULL);
+                continue;
+            }
+            /* anything else accepts the composition, unless it continues the kana */
+            if (e.converted || !(ime_on && is_romaji_char(c))) ed_commit(&e);
         }
         /* lines starting with / are commands: typed as plain letters */
-        int command = (n == 0 && c == '/' && !composing(&k)) || (n > 0 && buf[0] == '/');
+        int command = (e.n == 0 && c == '/' && !composing(&e)) || (e.n > 0 && buf[0] == '/');
         if (ime_on && is_romaji_char(c) && !command) {
-            rom_feed(&k, (char)c);
-            compose_draw(&k, NULL);
+            rom_feed(&e, (char)c);
+            ed_draw(&e, NULL);
             continue;
         }
         if (c == '\n') {
+            console_write(buf + e.cur, e.n - e.cur); /* leave the cursor after the line */
             console_puts("\n");
-            buf[n] = 0;
+            buf[e.n] = 0;
             if (use_history) history_add(buf);
-            result = (int)n;
+            result = (int)e.n;
             break;
         }
-        if (c == '\b') {
-            if (!n) continue;
-            /* remove one character */
-            size_t start = n - 1;
-            while (start > 0 && ((u8)buf[start] & 0xC0) == 0x80) start--;
-            int w = display_width(buf + start, n - start);
-            n = start;
-            console_puts(w == 2 ? "\b\b  \b\b" : "\b \b");
-            continue;
+        if (c == 0x1B) {
+            int lone;
+            c = read_escape(&lone);
+            if (c < 0) continue;
         }
-        if (c == 0x1B) { /* escape sequence: arrows walk the history */
-            if (console_getc(20) != '[') continue;
-            int dir = console_getc(20);
-            if (!use_history || (dir != 'A' && dir != 'B')) continue;
-            int npos = hpos + (dir == 'A' ? -1 : 1);
-            if (npos < 0 || npos > history_n) continue;
+        switch (c) {
+        case '\b':
+            if (e.cur) ed_delete(&e, prev_char(&e, e.cur), e.cur);
+            break;
+        case 0x04: /* Ctrl-D / Delete */
+            if (e.cur < e.n) ed_delete(&e, e.cur, next_char(&e, e.cur));
+            break;
+        case 0x01: e.cur = 0; break;
+        case 0x05: e.cur = e.n; break;
+        case 0x02: e.cur = prev_char(&e, e.cur); break;
+        case 0x06: e.cur = next_char(&e, e.cur); break;
+        case 0x0B: e.n = e.cur; break;        /* Ctrl-K */
+        case 0x15: ed_delete(&e, 0, e.cur); break; /* Ctrl-U */
+        case 0x17: {                           /* Ctrl-W */
+            size_t i = e.cur;
+            while (i > 0 && buf[i - 1] == ' ') i--;
+            while (i > 0 && buf[i - 1] != ' ') i--;
+            ed_delete(&e, i, e.cur);
+            break;
+        }
+        case 0x10: case 0x0E: { /* history */
+            int npos = hpos + (c == 0x10 ? -1 : 1);
+            if (!use_history || npos < 0 || npos > history_n) continue;
             hpos = npos;
-            for (int w = display_width(buf, n); w > 0; w--) console_puts("\b");
-            console_puts("\x1b[K");
             const char *line = hpos < history_n ? history[hpos] : "";
-            n = strlen(line);
-            if (n > max - 1) n = max - 1;
-            memcpy(buf, line, n);
-            console_write(buf, n);
-            continue;
+            e.n = strlen(line);
+            if (e.n > max - 1) e.n = max - 1;
+            memcpy(buf, line, e.n);
+            e.cur = e.n;
+            break;
         }
-        if (c < 0x20 && c != '\t') continue;
-        if (n + 1 < max) {
-            buf[n++] = (char)c;
-            char ch = (char)c;
-            console_write(&ch, 1);
+        default: {
+            if (c < 0x20) continue;
+            /* one whole character (UTF-8 arrives byte by byte) */
+            char ch[4] = {(char)c};
+            size_t len = 1;
+            int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+            while (more-- > 0) {
+                int cc = console_getc(50);
+                if (cc < 0x80) break;
+                ch[len++] = (char)cc;
+            }
+            int at_end = e.cur == e.n;
+            if (!ed_insert(&e, ch, len)) continue;
+            if (at_end) { /* the common case needs no redraw */
+                console_write(ch, len);
+                e.back += display_width(ch, len);
+                continue;
+            }
+            break;
         }
+        }
+        ed_draw(&e, NULL);
     }
-    sb_free(&k.pre);
-    sb_free(&k.cand);
+    sb_free(&e.pre);
+    sb_free(&e.cand);
     self->home_mute = muted;
-    if (self->home) home_set_input(self->home, "", 0, "", 0, 0);
+    if (self->home) home_set_input(self->home, "", 0, 0, "", 0, 0);
     return result;
 }
 

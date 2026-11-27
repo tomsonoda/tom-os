@@ -110,6 +110,18 @@ def main():
             vm.command("\x1b[A\x1b[A\x1b[B", "second", PROMPT)     # up, up, down
         step("up/down arrows recall earlier commands", history)
 
+        def editing():
+            left = "\x1b[D"
+            vm.command("/lua print(1+1)" + left * 4 + "4", "42", PROMPT)            # insert: 41+1
+            vm.command("lua print(7*7)\x01/", "49", PROMPT)                         # Ctrl-A
+            vm.command("/lua print(5*11)+nil" + left * 4 + "\x0b", "55", PROMPT)    # Ctrl-K
+            vm.command("junk\x15/lua print(6*11)", "66", PROMPT)                    # Ctrl-U
+            vm.command("/lua print(7*11) +\x17", "77", PROMPT)                      # Ctrl-W
+            vm.command("/lua print(8*111)" + left * 2 + "\x1b[3~\x05", "88", PROMPT)  # Delete, Ctrl-E
+            vm.command("/lua print(9*1)" + "\x02" * 2 + "\x061", "99", PROMPT)       # Ctrl-B, Ctrl-F
+            vm.command("あう" + left + "い", "echo: あいう", PROMPT)                   # wide characters
+        step("the line can be edited: arrows, Ctrl-A/E/B/F/K/U/W, Delete", editing)
+
         step("Lua errors are reported with a traceback", lambda: vm.command(
             "/lua error('boom')", "boom", "stack traceback", PROMPT))
 

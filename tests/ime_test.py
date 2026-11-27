@@ -17,8 +17,8 @@ from gui_test import Monitor, Screen  # noqa: E402
 PROMPT = boot_test.PROMPT
 STATUS_H = 24
 BLACK = 0x000000
-IME_ON = 0xD0794F   # indicator background when on
-IME_OFF = 0xE4DED4  # ... and when off
+IME_ON = 0x0E9F8E   # indicator background when on
+IME_OFF = 0xDCE5E3  # ... and when off
 W = 1024
 
 
@@ -39,7 +39,8 @@ def main():
 
     def typ(text):
         """Types ASCII text on the QEMU keyboard."""
-        names = {" ": "spc", "-": "minus", ",": "comma", ".": "dot", "\n": "ret", "/": "slash"}
+        names = {" ": "spc", "-": "minus", ",": "comma", ".": "dot", "\n": "ret", "/": "slash",
+                 "(": "shift-9", ")": "shift-0", "+": "shift-equal", "*": "shift-8"}
         for ch in text:
             mon.cmd("sendkey %s 40" % names.get(ch, ch))
             time.sleep(0.08)
@@ -142,6 +143,36 @@ def main():
             vm.expect("echo: abc です.")
             vm.expect(PROMPT)
         step("switching off keeps what was typed; ASCII and kana mix", mixed)
+
+        def edit_keys():
+            # the QEMU keyboard: arrows, Home, Delete, and the up arrow for history
+            typ("/lua print(1+1)")
+            for k in ("left", "left", "left", "left"):
+                mon.cmd("sendkey %s 40" % k); time.sleep(0.08)
+            typ("4\n")                  # 41+1
+            vm.expect("42"); vm.expect(PROMPT)
+            typ("lua print(7*7)")
+            mon.cmd("sendkey home 40"); time.sleep(0.1)
+            typ("/\n")
+            vm.expect("49"); vm.expect(PROMPT)
+            typ("/lua print(8*111)")
+            mon.cmd("sendkey left 40"); time.sleep(0.08)
+            mon.cmd("sendkey left 40"); time.sleep(0.08)
+            mon.cmd("sendkey delete 40"); time.sleep(0.08)
+            mon.cmd("sendkey ctrl-e 40"); time.sleep(0.08)
+            typ("\n")                   # 8*11
+            vm.expect("88"); vm.expect(PROMPT)
+            mon.cmd("sendkey up 40"); time.sleep(0.1)
+            mon.cmd("sendkey up 40"); time.sleep(0.1)   # back to print(7*7)
+            typ("\n")
+            vm.expect("49"); vm.expect(PROMPT)
+            mon.cmd("sendkey alt-spc"); time.sleep(0.2)  # Japanese: insert in the middle
+            typ("au\n")
+            mon.cmd("sendkey left 40"); time.sleep(0.1)
+            typ("i\n\n")
+            vm.expect("echo: あいう"); vm.expect(PROMPT)
+            mon.cmd("sendkey alt-spc"); time.sleep(0.2)
+        step("arrow keys, Home, Delete, Ctrl-E and history work on the keyboard", edit_keys)
 
         def commands():
             mon.cmd("sendkey alt-spc")   # on

@@ -126,7 +126,17 @@ The input method of your computer does not reach the QEMU window, so tom-os has 
 
 Lines that start with `/` are commands and stay in plain letters. The LLM understands hiragana too, so converting is optional when you write to the agent. Typing in the terminal that started QEMU (with your computer's own input method) also works.
 
-The up and down arrow keys recall earlier lines at the `tom-os>` prompt.
+The line you type can be edited, at the prompt and in apps that read a line:
+
+| Key | |
+|---|---|
+| `←` `→` or `Ctrl-B` `Ctrl-F` | Move the cursor |
+| `Home` `End` or `Ctrl-A` `Ctrl-E` | Jump to the start or end |
+| `Backspace`, `Delete` or `Ctrl-D` | Remove the character before or at the cursor |
+| `Ctrl-K`, `Ctrl-U`, `Ctrl-W` | Cut to the end, cut to the start, remove the word before the cursor |
+| `↑` `↓` or `Ctrl-P` `Ctrl-N` | Earlier and later lines (at the `tom-os>` prompt) |
+
+In the terminal that started QEMU, `Ctrl-A` is QEMU's own command key: press `Ctrl-A` twice there, or use `Home`. Lines longer than the terminal is wide are not redrawn correctly there while editing; the graphical home screen wraps them properly.
 
 ### Sound
 

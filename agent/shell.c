@@ -14,6 +14,8 @@ static void cmd_help(void) {
         "  /ps, /kill <id>  list and stop running apps (graphical mode)\n"
         "  /display <w>x<h> [scale]  change the screen size (graphical mode)\n"
         "  /layout full|windows      one app at a time, or overlapping windows\n"
+        "Editing: arrows or Ctrl-B/F move, Home/End or Ctrl-A/E jump, Ctrl-K/U/W cut,\n"
+        "  up/down recall earlier lines.\n"
         "Japanese input: Option/Alt+Space switches romaji -> kana (あ) on and off.\n"
         "  Space: convert to kanji (again: another candidate), Enter: accept,\n"
         "  Ctrl+K: katakana, Backspace/Esc: undo. Lines starting with / stay in letters.\n"
