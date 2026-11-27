@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::json::{self, Json};
 use crate::rt::{self, KCell, StrBuf, console, cstr, lossy, ui};
-use crate::{http, kprint, sys};
+use crate::{http, kprint, net, sys, tcp};
 
 const MAX_STEPS: usize = 24;
 const TOOL_RESULT_MAX: usize = 12000;
@@ -133,16 +133,10 @@ fn endpoint() -> Result<(u32, u16, String), String> {
         Some((h, p)) => (h, p.parse().unwrap_or(0)),
         None => (text.as_str(), 80),
     };
-    let c = cstr(host.as_bytes());
-    let mut ip = 0u32;
-    if unsafe { sys::net_parse_ip(c.as_ptr() as *const c_char, &mut ip) } == 0 {
+    let Some(ip) = net::parse_ip(host) else {
         return Err(format!("bad llm= address '{host}' (expected IP:port)"));
-    }
+    };
     Ok((ip, port, format!("{host}:{port}")))
-}
-
-fn net_error(code: i32) -> String {
-    lossy(unsafe { rt::from_c(sys::net_strerror(code)) })
 }
 
 // ------------------------------------------------------------------- LLM
@@ -206,9 +200,9 @@ fn llm_call(conv: &mut Vec<Message>) -> Result<(), String> {
     let (ip, port, shown) = endpoint()?;
     let req = build_request(conv, &setting("model"));
     let path = lossy(&setting("path"));
-    let (status, body) = http::post_json(ip, port, &path, &req, 600_000).map_err(|code| {
-        let mut msg = format!("LLM request to {shown} failed while {}: {}", http::phase().text(), net_error(code));
-        if code == sys::NET_ETIMEOUT && http::phase() == http::Phase::Connecting {
+    let (status, body) = http::post_json(ip, port, &path, &req, 600_000).map_err(|e| {
+        let mut msg = format!("LLM request to {shown} failed while {}: {}", http::phase().text(), e.text());
+        if e == net::NetError::Timeout && http::phase() == http::Phase::Connecting {
             msg.push_str(" (is the LLM server running? check /info and /set llm)");
         }
         msg
@@ -355,7 +349,7 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
 // ---------------------------------------------------------- kana to kanji
 
 fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    if unsafe { sys::net_up() } == 0 {
+    if !net::up() {
         return Err(String::from("no LLM for conversion"));
     }
     let (ip, port, _) = endpoint().map_err(|_| String::from("no LLM for conversion"))?;
@@ -378,7 +372,7 @@ fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String> {
     json::field(&mut req, "content", kana);
     req.extend_from_slice(b"}]}");
 
-    let (status, body) = http::post_json(ip, port, &lossy(&setting("path")), &req, 60_000).map_err(net_error)?;
+    let (status, body) = http::post_json(ip, port, &lossy(&setting("path")), &req, 60_000).map_err(|e| String::from(e.text()))?;
     let root = json::parse(&body);
     let text = root
         .as_ref()
@@ -441,7 +435,7 @@ static WAIT_START: AtomicU64 = AtomicU64::new(0);
 
 /// Status line while waiting for the model; writing a whole app can take a
 /// minute or two, so show that time is passing.
-extern "C" fn show_waiting() {
+fn show_waiting() {
     let what = match http::phase() {
         http::Phase::Waiting => "thinking",
         http::Phase::Receiving => "thinking, reply started",
@@ -460,9 +454,9 @@ fn turn(conv: &mut Vec<Message>, user_text: &[u8]) {
         WAIT_START.store(unsafe { sys::time_ms() }, Ordering::Relaxed);
         http::reset_phase();
         show_waiting();
-        unsafe { sys::net_wait_hook = Some(show_waiting) };
+        tcp::set_wait_hook(Some(show_waiting));
         let result = llm_call(conv);
-        unsafe { sys::net_wait_hook = None };
+        tcp::set_wait_hook(None);
         kprint!("{}\r\x1b[2K{}", ui::STATUS, ui::END);
         if let Err(e) = result {
             kprint!("{}[error] {e}\n{}", ui::ERROR, ui::END);
@@ -496,7 +490,7 @@ fn turn(conv: &mut Vec<Message>, user_text: &[u8]) {
 /// `user_text` must be a NUL-terminated string.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn agent_turn(user_text: *const c_char) {
-    if unsafe { sys::net_up() } == 0 {
+    if !net::up() {
         kprint!(
             "{}[error] no network device found. Start QEMU with -netdev user,id=n0 -device virtio-net-pci,netdev=n0\n{}",
             ui::ERROR,

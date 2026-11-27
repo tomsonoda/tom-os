@@ -127,6 +127,12 @@ impl<T> KCell<T> {
     pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         f(&mut self.0.borrow_mut())
     }
+    /// Like `with`, but does nothing if the value is in use.
+    pub fn try_with(&self, f: impl FnOnce(&mut T)) {
+        if let Ok(mut v) = self.0.try_borrow_mut() {
+            f(&mut v);
+        }
+    }
 }
 
 /// A growable byte buffer owned by C code (`strbuf` in kernel/tomos.h).

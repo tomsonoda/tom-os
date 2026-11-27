@@ -4,7 +4,8 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use crate::sys;
+use crate::net::NetError;
+use crate::tcp;
 
 /// What the current (or last) request is doing, for status and error text.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -82,7 +83,7 @@ struct Connection;
 
 impl Drop for Connection {
     fn drop(&mut self) {
-        unsafe { sys::tcp_close() };
+        tcp::close();
         BUSY.store(false, Ordering::Relaxed);
     }
 }
@@ -90,17 +91,16 @@ impl Drop for Connection {
 static BUSY: AtomicBool = AtomicBool::new(false);
 
 /// POSTs a JSON body and returns the status and the decoded response body,
-/// or a network error code (`sys::NET_E*`).
-pub fn post_json(ip: u32, port: u16, path: &str, body: &[u8], timeout_ms: i32) -> Result<(i32, Vec<u8>), i32> {
+/// or the network error.
+pub fn post_json(ip: u32, port: u16, path: &str, body: &[u8], timeout_ms: u64) -> Result<(i32, Vec<u8>), NetError> {
     // one connection at a time: the TCP layer has a single socket
     if BUSY.swap(true, Ordering::Relaxed) {
-        return Err(sys::NET_EBUSY);
+        return Err(NetError::Busy);
     }
     set_phase(Phase::Connecting);
-    let r = unsafe { sys::tcp_connect(ip, port, 5000) };
-    if r < 0 {
+    if let Err(e) = tcp::connect(ip, port, 5000) {
         BUSY.store(false, Ordering::Relaxed);
-        return Err(r);
+        return Err(e);
     }
     let _conn = Connection; // closes the socket on every way out
 
@@ -111,10 +111,7 @@ pub fn post_json(ip: u32, port: u16, path: &str, body: &[u8], timeout_ms: i32) -
     );
     set_phase(Phase::Sending);
     for part in [head.as_bytes(), body] {
-        let r = unsafe { sys::tcp_send(part.as_ptr(), part.len()) };
-        if r < 0 {
-            return Err(r);
-        }
+        tcp::send(part)?;
     }
 
     set_phase(Phase::Waiting);
@@ -124,14 +121,11 @@ pub fn post_json(ip: u32, port: u16, path: &str, body: &[u8], timeout_ms: i32) -
     let mut chunked = false;
     let mut buf = [0u8; 4096];
     loop {
-        let n = unsafe { sys::tcp_recv(buf.as_mut_ptr(), buf.len(), timeout_ms) };
-        if n < 0 {
-            return Err(n);
-        }
+        let n = tcp::recv(&mut buf, timeout_ms)?;
         if n == 0 {
             break;
         }
-        raw.extend_from_slice(&buf[..n as usize]);
+        raw.extend_from_slice(&buf[..n]);
         if head_len == 0 {
             let Some(sep) = raw.windows(4).position(|w| w == b"\r\n\r\n") else { continue };
             head_len = sep + 4;
@@ -154,7 +148,7 @@ pub fn post_json(ip: u32, port: u16, path: &str, body: &[u8], timeout_ms: i32) -
     }
 
     if head_len == 0 || raw.len() < 12 || !raw.starts_with(b"HTTP/") {
-        return Err(sys::NET_EPROTO);
+        return Err(NetError::Protocol);
     }
     let status = core::str::from_utf8(&raw[9..12]).ok().and_then(|s| s.parse().ok()).unwrap_or(0);
     let body = &raw[head_len..];

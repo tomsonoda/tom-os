@@ -45,24 +45,12 @@ unsafe extern "C" {
 
     // console and system
     pub fn console_clear_break();
+    pub fn console_break_pending() -> i32;
+    pub fn cpu_idle();
     pub fn cmdline_get(key: *const c_char, out: *mut u8, n: usize) -> i32;
-
-    // network (net/net.c, net/tcp.c)
-    pub fn net_up() -> i32;
-    pub fn net_parse_ip(s: *const c_char, ip: *mut u32) -> i32;
-    pub fn net_strerror(e: i32) -> *const c_char;
-    pub fn tcp_connect(ip: u32, port: u16, timeout_ms: i32) -> i32;
-    pub fn tcp_send(data: *const u8, len: usize) -> i32;
-    pub fn tcp_recv(buf: *mut u8, max: usize, timeout_ms: i32) -> i32;
-    pub fn tcp_close();
-    pub static mut net_wait_hook: Option<extern "C" fn()>;
 
     // apps
     pub fn lua_run(name: *const c_char, code: *const u8, len: usize, interactive: i32, timeout_ms: i32,
                    out: *mut c_void, err: *mut c_void) -> i32;
     pub fn app_launch(name: *const c_char, err: *mut c_void) -> i32;
 }
-
-pub const NET_ETIMEOUT: i32 = -2;
-pub const NET_EPROTO: i32 = -6;
-pub const NET_EBUSY: i32 = -7;

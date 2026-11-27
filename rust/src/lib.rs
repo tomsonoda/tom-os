@@ -11,3 +11,7 @@ mod agent;
 mod http;
 mod json;
 mod lua;
+mod net;
+mod pci;
+mod tcp;
+mod virtio_net;

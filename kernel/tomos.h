@@ -154,8 +154,8 @@ int sound_melody(const char *notes, int default_ms, double vol, int wave, void *
 void sound_stop(void *owner); /* NULL: everything */
 int sound_busy(void *owner);
 
-/* ---- PCI (kernel/virtio_net.c) ---- */
-u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off);
+/* ---- PCI ---- */
+u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off); /* rust/src/pci.rs */
 void pci_write(u8 bus, u8 dev, u8 fn, u8 off, u32 v);
 
 /* ---- graphics (gui/gfx.c) ---- */
@@ -251,37 +251,13 @@ size_t mem_used(void);
 const char *boot_cmdline(void);
 int cmdline_get(const char *key, char *out, size_t n);
 
-/* ---- network ---- */
-int nic_init(void);                 /* kernel/virtio_net.c; 0 on success */
-void nic_mac(u8 mac[6]);
-void nic_send(const void *frame, size_t len);
-void nic_poll(void (*handler)(const u8 *frame, size_t len));
-
-void net_init(void);                /* net/net.c */
+/* ---- network (rust/src/net.rs; TCP and the driver are used from Rust only) ---- */
+void net_init(void);
 int net_up(void);
 void net_poll(void);
 u32 net_ip(void);
-int net_parse_ip(const char *s, u32 *ip);
 void net_fmt_ip(u32 ip, char out[16]);
-int ip_send(u32 dst, u8 proto, const void *payload, size_t len);
-u16 net_checksum(u32 sum, const void *data, size_t n);
-u32 net_sum(u32 sum, const void *data, size_t n);
-void tcp_input(u32 src, const u8 *seg, size_t len); /* net/tcp.c */
-
-#define NET_ETIMEOUT (-2)
-#define NET_EBREAK (-3)
-#define NET_ERESET (-4)
-#define NET_ENONET (-5)
-#define NET_EPROTO (-6)
-#define NET_EBUSY (-7)
-/* Called about once per second while a TCP call is waiting (progress display). */
-extern void (*net_wait_hook)(void);
-int tcp_connect(u32 ip, u16 port, int timeout_ms);
-int tcp_send(const void *data, size_t len);
-/* >0 bytes, 0 on EOF, <0 on error. */
-int tcp_recv(void *buf, size_t max, int timeout_ms);
-void tcp_close(void);
-const char *net_strerror(int e);
+void nic_mac(u8 mac[6]);
 
 /* ---- RAM filesystem (fs/ramfs.c) ---- */
 int fs_write(const char *path, const char *data, size_t len);
