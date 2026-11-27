@@ -324,6 +324,7 @@ pub fn show(src: &[u32], sw: usize, (x0, y0, x1, y1): (usize, usize, usize, usiz
                 }
             }
         }
+        display::present(x0 * scale, y0 * scale, x1 * scale, y1 * scale);
     })
 }
 

@@ -22,12 +22,22 @@ class VM:
         # TOMOS_ARCH=aarch64 tests the ARM version on QEMU's "virt" machine.
         arch = os.environ.get("TOMOS_ARCH", "x86_64")
         append = "llm=10.0.2.2:%d model=mock%s %s" % (port, "" if gui else " gui=0", args)
-        if arch == "aarch64":
+        if arch == "aarch64" and os.environ.get("TOMOS_DEVICES") == "pci":
+            # The kind of machine other virtual machine monitors (crosvm on
+            # Android among them) provide: GICv3, virtio devices on PCI and
+            # virtio-gpu for the picture.
+            machine = ["-M", "virt,gic-version=3", "-cpu", "cortex-a72",
+                       "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"]
+            if gui:
+                machine += ["-device", "virtio-gpu-pci", "-device", "virtio-keyboard-pci",
+                            "-device", "virtio-tablet-pci"]
+        elif arch == "aarch64":
             machine = ["-M", "virt", "-cpu", "cortex-a72", "-global", "virtio-mmio.force-legacy=false",
                        "-netdev", "user,id=n0", "-device", "virtio-net-device,netdev=n0"]
             if gui:
                 machine += ["-device", "ramfb", "-device", "virtio-keyboard-device",
                             "-device", "virtio-tablet-device"]
+        if arch == "aarch64":
             boot = ["-kernel", os.path.join(ROOT, "build", "aarch64", "Image"), "-append", append]
         else:
             machine = ["-vga", "none", "-device", "VGA,vgamem_mb=64",

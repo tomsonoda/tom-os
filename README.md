@@ -61,7 +61,9 @@ make ARCH=aarch64 run      # text mode in this terminal
 make ARCH=aarch64 run-gui  # graphical mode in a QEMU window
 ```
 
-It is the same kernel: only `rust/src/arch/aarch64` (about 900 lines) differs from the PC version. The image has the header of a Linux arm64 kernel, so a boot loader that can start Linux can start it. It expects the devices of the `virt` machine: a PL011 serial port, the ARM generic timer and interrupt controller (GICv2), virtio devices with memory-mapped registers (network, keyboard, tablet), and QEMU's `ramfb` for the picture. There is no ISO for ARM.
+It is the same kernel: only `rust/src/arch/aarch64` (about 1,500 lines) differs from the PC version. The image has the header of a Linux arm64 kernel and can be loaded at any address, so a boot loader that can start Linux can start it. Devices are found through the device tree the boot loader passes. Supported: a PL011 or 16550 serial port, the ARM generic timer, GICv2 or GICv3, virtio devices with memory-mapped registers or on PCI (network, keyboard, tablet), and QEMU's `ramfb` or virtio-gpu for the picture. There is no ISO for ARM.
+
+`DEVICES=pci` (with `ARCH=aarch64`, on `run`, `run-gui` and `test`) starts QEMU with the kind of machine that other virtual machine monitors provide, such as crosvm, which the Android Virtualization Framework uses: GICv3, virtio on PCI, virtio-gpu. All tests pass in that configuration too. tom-os has not yet been run under crosvm or on an Android device; the 16550 serial port is written for crosvm but untested.
 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
@@ -343,8 +345,8 @@ python3 tools/claude_gateway.py
 | rust/src/arch/  what differs between machines                     |
 |   x86_64/   Multiboot, PIC/PIT/RTC, COM1, PS/2, VGA + BGA display,|
 |             PCI, AC'97          (+ arch/x86_64/boot.asm)          |
-|   aarch64/  device tree, GIC + generic timer, PL011, virtio-mmio, |
-|             virtio keyboard and tablet, ramfb                     |
+|   aarch64/  device tree, GIC + generic timer, PL011/16550, virtio |
+|             (mmio and PCI) keyboard and tablet, ramfb, virtio-gpu |
 +------------------------------------------------------------------+
 ```
 
@@ -410,7 +412,7 @@ end
 1. Persistent storage (virtio-blk) so apps survive a reboot
 2. Streaming display of LLM responses
 3. Local inference inside the kernel with a small model
-4. Android devices: the ARM version runs on QEMU's `virt` machine; next come virtio over PCI and virtio-gpu (what Android's own virtual machine framework offers), a position-independent image, and then drivers for one real device
+4. Android devices: the ARM version supports the devices that Android's virtual machine framework (crosvm) offers; next is trying it on a device that allows custom virtual machines, and packaging it as an app
 5. Other scripts on screen (a larger Unicode font), keyboard layouts other than US, a local kana-kanji dictionary
 6. Images, sound files, and a richer widget set for apps
 7. App isolation (user mode, memory protection)

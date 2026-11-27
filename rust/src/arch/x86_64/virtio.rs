@@ -59,7 +59,7 @@ pub fn find(kind: Kind) -> Vec<Box<dyn Transport>> {
     // the ids of "transitional" devices, which have the legacy interface
     let device = match kind {
         Kind::Net => 0x1000,
-        Kind::Input => return Vec::new(),
+        Kind::Input | Kind::Gpu => return Vec::new(),
     };
     let Some((bus, dev)) = pci::find(VIRTIO_VENDOR, device) else { return Vec::new() };
     let bar0 = pci::pci_read(bus, dev, 0, 0x10);

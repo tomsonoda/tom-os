@@ -1,4 +1,6 @@
-//! Memory-mapped device registers.
+//! Memory-mapped device registers, and the address space.
+
+use core::arch::asm;
 
 /// A block of device registers.
 #[derive(Clone, Copy)]
@@ -6,40 +8,56 @@ pub struct Registers(usize);
 
 impl Registers {
     /// # Safety
-    /// `base` must be the address of a device's registers, mapped as device
-    /// memory, and all offsets used with the result must be inside them.
+    /// `base` must be the address of a device's registers (not of memory
+    /// the kernel uses), and all offsets used with the result must be
+    /// inside them.
     pub const unsafe fn new(base: usize) -> Registers {
         Registers(base)
     }
-    pub fn read32(self, offset: usize) -> u32 {
-        // SAFETY: see `new`
-        unsafe { ((self.0 + offset) as *const u32).read_volatile() }
+    pub fn at(self, offset: usize) -> Registers {
+        Registers(self.0 + offset)
     }
-    pub fn write32(self, offset: usize, v: u32) {
-        unsafe { ((self.0 + offset) as *mut u32).write_volatile(v) }
-    }
+    // SAFETY (all accesses below): see `new`
     pub fn read8(self, offset: usize) -> u8 {
         unsafe { ((self.0 + offset) as *const u8).read_volatile() }
     }
+    pub fn read16(self, offset: usize) -> u16 {
+        unsafe { ((self.0 + offset) as *const u16).read_volatile() }
+    }
+    pub fn read32(self, offset: usize) -> u32 {
+        unsafe { ((self.0 + offset) as *const u32).read_volatile() }
+    }
+    pub fn write8(self, offset: usize, v: u8) {
+        unsafe { ((self.0 + offset) as *mut u8).write_volatile(v) }
+    }
     pub fn write16(self, offset: usize, v: u16) {
         unsafe { ((self.0 + offset) as *mut u16).write_volatile(v) }
+    }
+    pub fn write32(self, offset: usize, v: u32) {
+        unsafe { ((self.0 + offset) as *mut u32).write_volatile(v) }
     }
     pub fn write64(self, offset: usize, v: u64) {
         unsafe { ((self.0 + offset) as *mut u64).write_volatile(v) }
     }
 }
 
-// Where the "virt" machine has its devices. These addresses are the same
-// in every version of QEMU's machine (they are part of its interface).
-// SAFETY: fixed device addresses of the machine, in the device-memory part
-// of the address space set up by the boot code.
-pub const UART: Registers = unsafe { Registers::new(0x0900_0000) };
-pub const RTC: Registers = unsafe { Registers::new(0x0901_0000) };
-pub const FW_CFG: Registers = unsafe { Registers::new(0x0902_0000) };
-pub const GIC_DISTRIBUTOR: Registers = unsafe { Registers::new(0x0800_0000) };
-pub const GIC_CPU: Registers = unsafe { Registers::new(0x0801_0000) };
-pub const VIRTIO_BASE: usize = 0x0A00_0000;
-pub const VIRTIO_SLOTS: usize = 32;
-pub const VIRTIO_STEP: usize = 0x200;
-/// Where memory starts.
-pub const RAM_BASE: usize = 0x4000_0000;
+unsafe extern "C" {
+    /// The translation table set up by the boot code: 512 entries of 1 GiB.
+    static mut __page_table: [u64; 512];
+}
+
+/// The boot code maps everything as device registers except the kernel
+/// itself; this turns the 1 GiB pieces that hold memory into ordinary,
+/// cached memory.
+///
+/// # Safety
+/// `base..base + size` must be memory, according to the boot loader.
+pub unsafe fn map_memory(base: usize, size: usize) {
+    const GIB: usize = 1 << 30;
+    for i in (base / GIB..(base + size).div_ceil(GIB)).take_while(|&i| i < 512) {
+        // a block of normal memory: see the boot code for the bits
+        unsafe { (&raw mut __page_table).cast::<u64>().add(i).write_volatile((i * GIB) as u64 | 0x701) };
+    }
+    // SAFETY: forgets cached translations; the new ones are a superset
+    unsafe { asm!("dsb ishst", "tlbi vmalle1", "dsb ish", "isb", options(nostack, preserves_flags)) };
+}

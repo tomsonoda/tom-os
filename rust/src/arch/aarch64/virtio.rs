@@ -1,10 +1,12 @@
 //! virtio devices with memory-mapped registers (virtio-mmio), in both
-//! versions of the interface: 1 ("legacy") and 2.
+//! versions of the interface: 1 ("legacy") and 2. Devices on PCI are in
+//! pci.rs.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use super::mmio::{Registers, VIRTIO_BASE, VIRTIO_SLOTS, VIRTIO_STEP};
+use super::fdt;
+use super::mmio::Registers;
 use crate::virtio::{Kind, Transport};
 
 const MAGIC: usize = 0x000;
@@ -102,13 +104,15 @@ impl Transport for Device {
 
 pub fn find(kind: Kind) -> Vec<Box<dyn Transport>> {
     let mut found: Vec<Box<dyn Transport>> = Vec::new();
-    for slot in 0..VIRTIO_SLOTS {
-        // SAFETY: the machine's virtio-mmio slots, in device memory
-        let regs = unsafe { Registers::new(VIRTIO_BASE + slot * VIRTIO_STEP) };
+    let Some(tree) = fdt::tree() else { return found };
+    tree.all_compatible("virtio,mmio", |base| {
+        // SAFETY: a virtio-mmio device's registers, as the device tree says
+        let regs = unsafe { Registers::new(base) };
         let version = regs.read32(VERSION);
         if regs.read32(MAGIC) == 0x7472_6976 && (version == 1 || version == 2) && regs.read32(DEVICE_ID) == kind as u32 {
             found.push(Box::new(Device { regs, modern: version == 2 }));
         }
-    }
+    });
+    found.extend(super::pci::find_virtio(kind));
     found
 }

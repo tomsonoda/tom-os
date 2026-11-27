@@ -8,3 +8,7 @@ build-std = ["core", "alloc"]
 json-target-spec = true
 # memcpy and friends come from compiler_builtins: there is no C library
 build-std-features = ["compiler-builtins-mem"]
+
+# The ARM image can be loaded at any address.
+[target.aarch64-unknown-none]
+rustflags = ["-C", "relocation-model=pie"]

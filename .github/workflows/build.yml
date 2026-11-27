@@ -29,6 +29,8 @@ jobs:
         run: make ARCH=aarch64
       - name: Test (ARM)
         run: make ARCH=aarch64 test
+      - name: Test (ARM, virtio on PCI and virtio-gpu)
+        run: make ARCH=aarch64 DEVICES=pci test
       - uses: actions/upload-artifact@v4
         with:
           name: tomos-iso

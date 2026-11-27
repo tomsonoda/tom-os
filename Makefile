@@ -72,12 +72,22 @@ ifeq ($(ARCH),x86_64)
 QEMU_FLAGS := -m $(MEM) -no-reboot -kernel $(KERNEL) -vga none -device VGA,vgamem_mb=64 \
               -netdev user,id=n0 -device virtio-net-pci,netdev=n0
 else
-# The "virt" machine with a network card; in graphical mode also a simple
-# framebuffer, a keyboard and a tablet (a pointer that follows the host's).
+# The "virt" machine with a network card; in graphical mode also a
+# display, a keyboard and a tablet (a pointer that follows the host's).
+# DEVICES=pci gives the kind of machine that other virtual machine monitors
+# (crosvm on Android among them) provide: a newer interrupt controller
+# (GICv3), virtio devices on PCI, and virtio-gpu for the picture.
+DEVICES ?= mmio
+ifeq ($(DEVICES),pci)
+QEMU_FLAGS := -M virt,gic-version=3 -cpu cortex-a72 -m $(MEM) -no-reboot -kernel $(KERNEL) \
+              -netdev user,id=n0 -device virtio-net-pci,netdev=n0
+QEMU_GUI   := -device virtio-gpu-pci -device virtio-keyboard-pci -device virtio-tablet-pci
+else
 QEMU_FLAGS := -M virt -cpu cortex-a72 -m $(MEM) -no-reboot -kernel $(KERNEL) \
               -global virtio-mmio.force-legacy=false \
               -netdev user,id=n0 -device virtio-net-device,netdev=n0
 QEMU_GUI   := -device ramfb -device virtio-keyboard-device -device virtio-tablet-device
+endif
 endif
 ARGS := llm=$(LLM) model=$(MODEL) $(if $(RES),res=$(RES)) $(if $(SCALE),scale=$(SCALE))
 
@@ -116,7 +126,7 @@ RUST_BIN = $(shell cd rust && rustc --print sysroot)/lib/rustlib/$(shell cd rust
 
 $(KERNEL): $(RUSTLIB) arch/aarch64/linker.ld
 	@mkdir -p $(dir $@)
-	$(RUST_BIN)/rust-lld -flavor gnu -nostdlib -z max-page-size=0x1000 --gc-sections \
+	$(RUST_BIN)/rust-lld -flavor gnu -nostdlib -pie --no-dynamic-linker -z max-page-size=0x1000 --gc-sections \
 	    -T arch/aarch64/linker.ld -o $(BUILD)/aarch64/tomos.elf $(RUSTLIB)
 	$(RUST_BIN)/rust-objcopy -O binary $(BUILD)/aarch64/tomos.elf $@
 	@ls -l $@ | awk '{printf "built %s (%d KiB)\n", $$NF, $$5 / 1024}'
@@ -150,15 +160,15 @@ run-vga: $(KERNEL)
 
 # The ARM version has no sound driver yet, so there is no sound test for it.
 test: $(KERNEL)
-	TOMOS_ARCH=$(ARCH) python3 tests/boot_test.py
-	TOMOS_ARCH=$(ARCH) python3 tests/lua_test.py
-	TOMOS_ARCH=$(ARCH) python3 tests/gui_test.py
-	TOMOS_ARCH=$(ARCH) python3 tests/phone_test.py
-	TOMOS_ARCH=$(ARCH) python3 tests/ime_test.py
+	TOMOS_ARCH=$(ARCH) TOMOS_DEVICES=$(DEVICES) python3 tests/boot_test.py
+	TOMOS_ARCH=$(ARCH) TOMOS_DEVICES=$(DEVICES) python3 tests/lua_test.py
+	TOMOS_ARCH=$(ARCH) TOMOS_DEVICES=$(DEVICES) python3 tests/gui_test.py
+	TOMOS_ARCH=$(ARCH) TOMOS_DEVICES=$(DEVICES) python3 tests/phone_test.py
+	TOMOS_ARCH=$(ARCH) TOMOS_DEVICES=$(DEVICES) python3 tests/ime_test.py
 ifeq ($(ARCH),x86_64)
 	python3 tests/sound_test.py
 endif
-	TOMOS_ARCH=$(ARCH) python3 tests/gateway_test.py
+	TOMOS_ARCH=$(ARCH) TOMOS_DEVICES=$(DEVICES) python3 tests/gateway_test.py
 
 # Bootable CD image (BIOS boot via GRUB). Needs grub-pc-bin, xorriso and mtools.
 iso: $(ISO)

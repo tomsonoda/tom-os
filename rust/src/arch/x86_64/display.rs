@@ -99,3 +99,7 @@ pub fn set_mode(w: i32, h: i32) -> Option<*mut u32> {
     bga_write(4, 0x41); // enabled + linear framebuffer
     (bga_read(1) as i32 == w && bga_read(2) as i32 == h).then_some(addr as *mut u32)
 }
+
+/// The pixels in a rectangle have changed (the adapter shows its memory
+/// as it is, so there is nothing to do).
+pub fn present(_x0: usize, _y0: usize, _x1: usize, _y1: usize) {}

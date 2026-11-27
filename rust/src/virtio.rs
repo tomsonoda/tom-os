@@ -12,6 +12,7 @@ use core::sync::atomic::{Ordering, fence};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Net = 1,
+    Gpu = 16,
     Input = 18,
 }
 
@@ -146,6 +147,33 @@ impl Queue {
     pub fn free_slot(&self) -> Option<u16> {
         let idx = self.avail_idx();
         (idx.wrapping_sub(self.used_idx()) < self.slots).then_some(idx % self.slots)
+    }
+
+    /// Sends a request and waits for the device's answer of up to
+    /// `response_len` bytes (for queues used for nothing else, with at
+    /// least two buffers). None if the device does not answer.
+    pub fn request(&mut self, t: &mut dyn Transport, request: &[u8], response_len: usize) -> Option<&[u8]> {
+        if self.slots < 2 || request.len() > self.buf_size || response_len > self.buf_size {
+            return None;
+        }
+        self.buf(0)[..request.len()].copy_from_slice(request);
+        // two buffers chained: the request, then room for the answer
+        let (first, second) = (self.bufs as u64, self.bufs as u64 + self.buf_size as u64);
+        unsafe {
+            write_volatile(self.desc, Desc { addr: first, len: request.len() as u32, flags: 1, next: 1 });
+            write_volatile(self.desc.add(1), Desc { addr: second, len: response_len as u32, flags: DEVICE_WRITES, next: 0 });
+        }
+        self.push_avail(0);
+        self.notify(t);
+        let mut spins = 0u32;
+        while self.pop_used().is_none() {
+            spins += 1;
+            if spins > 50_000_000 {
+                return None;
+            }
+            core::hint::spin_loop();
+        }
+        Some(&self.buf(1)[..response_len])
     }
 
     pub fn notify(&self, t: &mut dyn Transport) {

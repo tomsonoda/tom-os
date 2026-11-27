@@ -1,25 +1,64 @@
-//! The serial console: a PL011 UART.
+//! The serial console: a PL011 UART (QEMU) or a 16550 (crosvm), whichever
+//! the device tree names.
 
-use super::mmio::UART;
+use super::fdt;
+use super::mmio::Registers;
+use crate::rt::KCell;
 
-const DATA: usize = 0x00;
-const FLAGS: usize = 0x18;
-const TX_FULL: u32 = 1 << 5;
-const RX_EMPTY: u32 = 1 << 4;
+#[derive(Clone, Copy)]
+enum Uart {
+    None,
+    Pl011(Registers),
+    Ns16550(Registers),
+}
+
+static UART: KCell<Uart> = KCell::new(Uart::None);
 
 pub fn init() {
-    // the virtual machine's UART works as it is
+    let Some(tree) = fdt::tree() else { return };
+    let found = |device: &str| tree.compatible(device).and_then(|n| n.reg(0));
+    // SAFETY: device registers, at the address the device tree gives
+    let uart = unsafe {
+        if let Some((base, _)) = found("arm,pl011") {
+            Uart::Pl011(Registers::new(base))
+        } else if let Some((base, _)) = found("ns16550a") {
+            Uart::Ns16550(Registers::new(base))
+        } else {
+            Uart::None
+        }
+    };
+    UART.with(|u| *u = uart);
+}
+
+fn uart() -> Uart {
+    UART.try_with(|u| *u).unwrap_or(Uart::None)
 }
 
 pub fn put(c: u8) {
-    let mut spins = 0;
-    while spins < 100_000 && UART.read32(FLAGS) & TX_FULL != 0 {
-        spins += 1;
+    let wait = |busy: &dyn Fn() -> bool| {
+        let mut spins = 0;
+        while spins < 100_000 && busy() {
+            spins += 1;
+        }
+    };
+    match uart() {
+        Uart::Pl011(r) => {
+            wait(&|| r.read32(0x18) & (1 << 5) != 0); // transmit queue full
+            r.write32(0x00, c as u32);
+        }
+        Uart::Ns16550(r) => {
+            wait(&|| r.read8(5) & 0x20 == 0); // transmit register not empty
+            r.write8(0, c);
+        }
+        Uart::None => {}
     }
-    UART.write32(DATA, c as u32);
 }
 
 /// A received byte, if there is one.
 pub fn get() -> Option<u8> {
-    (UART.read32(FLAGS) & RX_EMPTY == 0).then(|| UART.read32(DATA) as u8)
+    match uart() {
+        Uart::Pl011(r) => (r.read32(0x18) & (1 << 4) == 0).then(|| r.read32(0x00) as u8),
+        Uart::Ns16550(r) => (r.read8(5) & 1 != 0).then(|| r.read8(0)),
+        Uart::None => None,
+    }
 }
