@@ -17,6 +17,8 @@ use core::time::Duration;
 use remedy_lua::{Error, Interrupt, IoError, Libs, LimitKind, Limits, Lua, ModuleSource, Stream, Value};
 
 use crate::fs;
+use crate::gfx::Surface;
+use crate::wm::{self, GfxError};
 use crate::rt::{console, cstr};
 use crate::sys;
 
@@ -97,16 +99,20 @@ fn stop(intr: &Interrupt) -> R {
     Ok(vec![])
 }
 
-fn gfx_result(code: i32) -> R {
-    match code {
-        0 => Ok(vec![]),
-        -1 => Err(Error::runtime(
-            "graphics are not available here (needs the GUI and an app started with /run or launch_app)",
-        )),
-        -2 => Err(Error::runtime("call gfx.mode(width, height) first")),
-        -3 => Err(Error::runtime("out of memory")),
-        _ => Err(Error::runtime("graphics error")),
-    }
+fn gfx_error(e: GfxError) -> Error {
+    Error::runtime(match e {
+        GfxError::Unavailable => {
+            "graphics are not available here (needs the GUI and an app started with /run or launch_app)"
+        }
+        GfxError::NoCanvas => "call gfx.mode(width, height) first",
+        GfxError::OutOfMemory => "out of memory",
+    })
+}
+
+/// Draws on the app's canvas.
+fn draw(f: impl FnOnce(&mut Surface)) -> R {
+    wm::app_draw(f).map_err(gfx_error)?;
+    Ok(vec![])
 }
 
 // ------------------------------------------------------------- io streams
@@ -372,65 +378,72 @@ fn register_gfx(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     lua.register("gfx.mode", |lua, a| {
         // gfx.mode() or gfx.mode(title): the whole screen; gfx.mode(w, h [, title])
         let whole = !is_given(a, 0) || matches!(a.first(), Some(Value::Str(_)));
-        let (w, h) = if whole { (0, 0) } else { (int(lua, a, 0)?, int(lua, a, 1)?) };
+        let size = if whole { None } else { Some((int(lua, a, 0)?, int(lua, a, 1)?)) };
         let title_at = if whole { 0 } else { 2 };
-        let title = if matches!(a.get(title_at), Some(Value::Str(_))) { Some(cstr(&bytes(lua, a, title_at)?)) } else { None };
-        let (mut ow, mut oh) = (0, 0);
-        let tp = title.as_ref().map_or(core::ptr::null(), |t| t.as_ptr() as *const c_char);
-        gfx_result(unsafe { sys::host_gfx_mode(whole as i32, w, h, tp, &mut ow, &mut oh) })?;
-        Ok(vec![Value::Int(ow as i64), Value::Int(oh as i64)])
+        let title = if matches!(a.get(title_at), Some(Value::Str(_))) { Some(bytes(lua, a, title_at)?) } else { None };
+        let (w, h) = wm::app_mode(size, title.as_deref()).map_err(gfx_error)?;
+        Ok(vec![Value::Int(w as i64), Value::Int(h as i64)])
     })?;
-    lua.register("gfx.clear", |lua, a| gfx_result(unsafe { sys::host_gfx_clear(color(lua, a, 0, 0)?) }))?;
+    lua.register("gfx.clear", |lua, a| {
+        let c = color(lua, a, 0, 0)?;
+        draw(|s| s.fill(0, 0, s.w, s.h, c))
+    })?;
     lua.register("gfx.rect", |lua, a| {
+        let (x, y, w, h) = (int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, int(lua, a, 3)?);
         let c = color(lua, a, 4, 0xFF_FFFF)?;
-        gfx_result(unsafe { sys::host_gfx_rect(int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, int(lua, a, 3)?, c, 0) })
+        draw(|s| s.fill(x, y, w, h, c))
     })?;
     lua.register("gfx.box", |lua, a| {
+        let (x, y, w, h) = (int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, int(lua, a, 3)?);
         let c = color(lua, a, 4, 0xFF_FFFF)?;
-        gfx_result(unsafe { sys::host_gfx_rect(int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, int(lua, a, 3)?, c, 1) })
+        draw(|s| {
+            s.fill(x, y, w, 1, c);
+            s.fill(x, y.saturating_add(h).saturating_sub(1), w, 1, c);
+            s.fill(x, y, 1, h, c);
+            s.fill(x.saturating_add(w).saturating_sub(1), y, 1, h, c);
+        })
     })?;
     lua.register("gfx.pixel", |lua, a| {
-        gfx_result(unsafe { sys::host_gfx_pixel(int(lua, a, 0)?, int(lua, a, 1)?, color(lua, a, 2, 0xFF_FFFF)?) })
+        let (x, y, c) = (int(lua, a, 0)?, int(lua, a, 1)?, color(lua, a, 2, 0xFF_FFFF)?);
+        draw(|s| s.pixel(x, y, c))
     })?;
     lua.register("gfx.line", |lua, a| {
+        let (x0, y0, x1, y1) = (int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, int(lua, a, 3)?);
         let c = color(lua, a, 4, 0xFF_FFFF)?;
-        gfx_result(unsafe { sys::host_gfx_line(int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, int(lua, a, 3)?, c) })
+        draw(|s| s.line(x0, y0, x1, y1, c))
     })?;
     lua.register("gfx.circle", |lua, a| {
         let fill = a.get(4).is_some_and(|v| v.truthy());
-        let c = color(lua, a, 3, 0xFF_FFFF)?;
-        gfx_result(unsafe { sys::host_gfx_circle(int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, c, fill as i32) })
+        let (x, y, r, c) = (int(lua, a, 0)?, int(lua, a, 1)?, int(lua, a, 2)?, color(lua, a, 3, 0xFF_FFFF)?);
+        draw(|s| s.circle(x, y, r, c, fill))
     })?;
     lua.register("gfx.text", |lua, a| {
         let text = display(lua, a.get(2));
+        let (x, y) = (int(lua, a, 0)?, int(lua, a, 1)?);
         let (c, scale) = (color(lua, a, 3, 0xFF_FFFF)?, opt_int(lua, a, 4, 1)?);
-        gfx_result(unsafe { sys::host_gfx_text(int(lua, a, 0)?, int(lua, a, 1)?, text.as_ptr(), text.len(), c, scale) })
+        draw(|s| s.text(x, y, &text, c, None, scale))
     })?;
     let i = intr.clone();
     lua.register("gfx.flip", move |lua, a| {
-        match unsafe { sys::host_gfx_flip(opt_num(lua, a, 0, 60.0)?) } {
-            1 => stop(&i),
-            code => gfx_result(code),
+        if wm::app_flip(opt_num(lua, a, 0, 60.0)?).map_err(gfx_error)? {
+            return stop(&i);
         }
+        Ok(vec![])
     })?;
     lua.register("gfx.key", |lua, a| {
         let name = bytes(lua, a, 0)?;
-        let c = cstr(&name);
-        match unsafe { sys::host_gfx_key(c.as_ptr() as *const c_char) } {
-            -4 => Err(Error::runtime(format!("unknown key name '{}'", String::from_utf8_lossy(&name)))),
-            code if code < 0 => gfx_result(code),
-            held => Ok(vec![Value::Bool(held != 0)]),
+        match wm::app_key(&name).map_err(gfx_error)? {
+            Some(held) => Ok(vec![Value::Bool(held)]),
+            None => Err(Error::runtime(format!("unknown key name '{}'", String::from_utf8_lossy(&name)))),
         }
     })?;
     lua.register("gfx.mouse", |_, _| {
-        let mut m = [0i32; 4];
-        gfx_result(unsafe { sys::host_gfx_mouse(m.as_mut_ptr()) })?;
-        Ok(vec![Value::Int(m[0] as i64), Value::Int(m[1] as i64), Value::Bool(m[2] != 0), Value::Bool(m[3] != 0)])
+        let (x, y, left, right) = wm::app_mouse().map_err(gfx_error)?;
+        Ok(vec![Value::Int(x as i64), Value::Int(y as i64), Value::Bool(left), Value::Bool(right)])
     })?;
     lua.register("gfx.size", |_, _| {
-        let mut s = [0i32; 2];
-        gfx_result(unsafe { sys::host_gfx_size(s.as_mut_ptr()) })?;
-        Ok(vec![Value::Int(s[0] as i64), Value::Int(s[1] as i64)])
+        let (w, h) = wm::app_size().map_err(gfx_error)?;
+        Ok(vec![Value::Int(w as i64), Value::Int(h as i64)])
     })?;
     lua.register("gfx.rgb", |lua, a| {
         let c = |i| -> Result<i64, Error> { Ok(int(lua, a, i)?.clamp(0, 255) as i64) };
@@ -571,7 +584,7 @@ fn setup(lua: &mut Lua) -> Result<(), Error> {
     register_gfx(lua, &intr)?;
     register_sound(lua, &intr)?;
     lua.exec(PRELUDE, "=prelude")?;
-    let gui = Value::Bool(unsafe { sys::wm_active() } != 0);
+    let gui = Value::Bool(wm::active());
     let tomos = lua.get_global("tomos")?;
     let key = lua.create_string("gui")?;
     lua.set(tomos, key, gui)?;

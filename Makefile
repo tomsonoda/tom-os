@@ -42,13 +42,13 @@ CFLAGS := -std=gnu11 -O2 -g -ffreestanding -fno-stack-protector -fno-pic -fno-pi
           -nostdinc -isystem $(GCCINC) -isystem lib/include -D_LIBC_LIMITS_H_
 WARN   := -Wall -Wextra
 
-SRCS := $(wildcard kernel/*.c lib/*.c lua/*.c gui/*.c)
+SRCS := $(wildcard kernel/*.c lib/*.c lua/*.c)
 # The Rust part of the kernel: rust/ (agent, HTTP, JSON, Lua bindings) and
 # third_party/remedy-lua (the Lua interpreter), built by cargo into one
 # static library.
 RUSTLIB := rust/target/x86_64-tomos/release/libtomos_rt.a
 RUST_SRCS := $(shell find rust/src third_party/remedy-lua/src -type f) rust/Cargo.toml \
-             rust/x86_64-tomos.json gui/font_ja.bin third_party/remedy-lua/Cargo.toml
+             rust/x86_64-tomos.json rust/assets/font_ja.bin third_party/remedy-lua/Cargo.toml
 OBJS := $(BUILD)/arch/x86_64/boot.o \
         $(SRCS:%.c=$(BUILD)/%.o)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds gui/font_ja.bin, the Japanese font tom-os draws with.
+"""Builds rust/assets/font_ja.bin, the Japanese font tom-os draws with.
 
 Source: the Shinonome (東雲) 16-dot gothic font, shnmk16.pcf(.gz), which is
 in the public domain (Debian package xfonts-shinonome). It covers JIS X 0208:
@@ -10,7 +10,7 @@ Output format (little endian):
     count x u16 code point (sorted, Basic Multilingual Plane)
     count x 32 bytes: 16 rows of 16 pixels, two bytes per row, MSB = left
 
-Usage: python3 tools/make_font.py shnmk16.pcf.gz gui/font_ja.bin
+Usage: python3 tools/make_font.py shnmk16.pcf.gz rust/assets/font_ja.bin
 """
 import gzip
 import struct

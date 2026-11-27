@@ -10,7 +10,7 @@ use core::cell::{Cell, RefCell};
 use core::ffi::{c_char, c_void};
 
 use crate::rt::{KCell, StrBuf, console, cstr, lossy};
-use crate::{fs, kprint, sys};
+use crate::{fs, kprint, sys, wm};
 
 const MAX_APPS: usize = 10;
 
@@ -28,7 +28,7 @@ struct App {
     path: Vec<u8>, // NUL-terminated
     code: Vec<u8>, // private copy: the app may rewrite its own file
     tty: *mut c_void,
-    window: *mut c_void,
+    window: wm::Id,
     outcome: Rc<Outcome>,
 }
 
@@ -69,7 +69,7 @@ fn run(path: &[u8], code: &[u8]) -> Result<(), String> {
 extern "C" fn app_main(arg: *mut c_void) {
     // SAFETY: `arg` is the Box that launch_windowed handed to this thread
     let app = unsafe { Box::from_raw(arg as *mut App) };
-    unsafe { sys::thread_set_window(app.window) };
+    unsafe { sys::thread_set_window(app.window) }; // the scheduler keeps the id for the Lua gfx library
     let result = run(&app.path, &app.code);
     app.outcome.failed.set(result.is_err());
     if let Err(e) = &result {
@@ -78,11 +78,11 @@ extern "C" fn app_main(arg: *mut c_void) {
     app.outcome.done.set(true);
 
     if unsafe { sys::thread_killed() } == 0 {
-        let graphical = unsafe { sys::wm_is_canvas(app.window) } != 0;
+        let graphical = wm::is_canvas(app.window);
         if result.is_err() || !graphical {
             // keep the window so the output or the error can be read
             if graphical {
-                unsafe { sys::wm_set_text(app.window) };
+                wm::set_text(app.window);
             }
             if let Err(e) = &result {
                 kprint!("\x1b[0m\n\x1b[1;31m[error]\x1b[0m {e}\n");
@@ -95,10 +95,8 @@ extern "C" fn app_main(arg: *mut c_void) {
             }
         }
     }
-    unsafe {
-        sys::wm_destroy(app.window);
-        sys::tty_destroy(app.tty);
-    }
+    wm::destroy(app.window);
+    unsafe { sys::tty_destroy(app.tty) };
     RUNNING.with(|r| r.retain(|a| a.id != app.id));
 }
 
@@ -112,11 +110,10 @@ fn launch_windowed(path: Vec<u8>, code: Vec<u8>) -> Result<Started, String> {
     if tty.is_null() {
         return failed();
     }
-    let window = unsafe { sys::wm_create(title.as_ptr() as *const c_char, tty, core::ptr::null_mut()) };
-    if window.is_null() {
+    let Some(window) = wm::create(&path, tty, core::ptr::null_mut()) else {
         unsafe { sys::tty_destroy(tty) };
         return failed();
-    }
+    };
     let id = NEXT_ID.with(|n| {
         *n += 1;
         *n - 1
@@ -128,13 +125,11 @@ fn launch_windowed(path: Vec<u8>, code: Vec<u8>) -> Result<Started, String> {
     if thread.is_null() {
         // SAFETY: the thread was not created, so the Box is still ours
         drop(unsafe { Box::from_raw(app) });
-        unsafe {
-            sys::wm_destroy(window);
-            sys::tty_destroy(tty);
-        }
+        wm::destroy(window);
+        unsafe { sys::tty_destroy(tty) };
         return failed();
     }
-    unsafe { sys::wm_set_owner(window, thread) }; // closing the window stops the app
+    wm::set_owner(window, thread); // closing the window stops the app
     RUNNING.with(|r| r.push(Running { id, path: shown, thread, outcome: outcome.clone() }));
 
     // Give it a moment so start-up errors can be reported to the caller.
@@ -156,7 +151,7 @@ pub fn launch(name: &[u8]) -> Result<Started, String> {
     let Some((path, code)) = resolve(name) else {
         return Err(format!("no such app: {}", lossy(name)));
     };
-    if unsafe { sys::wm_active() } != 0 {
+    if wm::active() {
         return launch_windowed(path, code);
     }
     let result = run(&cstr(&path), &code);

@@ -17,7 +17,7 @@ struct thread {
     int idle; /* last gave up the CPU because it was waiting */
     int kill;
     tty *tty;
-    struct window *win;
+    size_t win;
     void *data;
     void (*fn)(void *);
     void *arg;
@@ -30,8 +30,8 @@ static thread *cur = &threads[0];
 
 tty *thread_tty(void) { return cur->tty; }
 void thread_set_tty(tty *t) { cur->tty = t; }
-struct window *thread_window(void) { return cur->win; }
-void thread_set_window(struct window *w) { cur->win = w; }
+size_t thread_window(void) { return cur->win; }
+void thread_set_window(size_t w) { cur->win = w; }
 void *thread_data(void) { return cur->data; }
 void thread_set_data(void *p) { cur->data = p; }
 int thread_killed(void) { return cur->kill; }

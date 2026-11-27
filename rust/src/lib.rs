@@ -20,3 +20,4 @@ mod pci;
 mod shell;
 mod tcp;
 mod virtio_net;
+mod wm;

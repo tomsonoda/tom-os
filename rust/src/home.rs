@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::ffi::{c_char, c_void};
 
 use crate::gfx::{Surface, font_wide, utf8_decode};
-use crate::rt::{cstr, from_c};
+use crate::rt::cstr;
 use crate::sys;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -259,6 +259,15 @@ impl HomeView {
         }
     }
 
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    /// Something outside changed what the view shows (the input method).
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
     fn new_entry(&mut self, kind: Kind) -> &mut Vec<u8> {
         if self.entries.len() == MAX_ENTRIES {
             self.entries.pop_front(); // forget the oldest
@@ -348,7 +357,7 @@ impl HomeView {
         self.dirty = true;
     }
 
-    fn scroll_by(&mut self, dy: i32) {
+    pub fn scroll_by(&mut self, dy: i32) {
         self.scroll = self.scroll.saturating_add(dy).clamp(0, self.max_scroll);
         self.dirty = true;
     }
@@ -358,7 +367,7 @@ impl HomeView {
         unsafe { sys::tty_input(self.tty, t.as_ptr() as *const c_char) };
     }
 
-    fn click(&mut self, x: i32, y: i32) {
+    pub fn click(&mut self, x: i32, y: i32) {
         if let Some(c) = self.chips.iter().find(|c| x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
             self.type_text(c.text.as_bytes());
             self.type_text(b"\n");
@@ -455,7 +464,7 @@ impl HomeView {
         }
     }
 
-    fn render(&mut self, s: &mut Surface) {
+    pub fn render(&mut self, s: &mut Surface) {
         self.dirty = false;
         s.fill(0, 0, s.w, s.h, C_BG);
         let col_w = (s.w - 64).min(MAX_COL);
@@ -522,7 +531,7 @@ impl HomeView {
 }
 
 // ------------------------------------------------------------ C interface
-// For the window system and the console, which are still C. `h` is always
+// For the console and start-up code, which are still C. `h` is always
 // a pointer from `home_create`; views are never freed.
 
 #[unsafe(no_mangle)]
@@ -531,23 +540,8 @@ pub extern "C" fn home_create(tty: *mut c_void) -> *mut HomeView {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_dirty(h: *const HomeView) -> i32 {
-    unsafe { &*h }.dirty as i32
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_invalidate(h: *mut HomeView) {
-    unsafe { &mut *h }.dirty = true;
-}
-
-#[unsafe(no_mangle)]
 pub unsafe extern "C" fn home_feed(h: *mut HomeView, s: *const u8, n: usize) {
     unsafe { &mut *h }.feed(unsafe { core::slice::from_raw_parts(s, n) })
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_add_user(h: *mut HomeView, line: *const c_char) {
-    unsafe { &mut *h }.add_user(unsafe { from_c(line) })
 }
 
 /// The line being typed: text, cursor (byte offset), and the composition
@@ -558,21 +552,6 @@ pub unsafe extern "C" fn home_set_input(
 ) {
     let bytes = |p: *const u8, n: usize| if n == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(p, n) } };
     unsafe { &mut *h }.set_input(bytes(line, n), cursor, bytes(comp, comp_len), converted != 0)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_scroll(h: *mut HomeView, dy: i32) {
-    unsafe { &mut *h }.scroll_by(dy)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_click(h: *mut HomeView, x: i32, y: i32) {
-    unsafe { &mut *h }.click(x, y)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_render(h: *mut HomeView, s: *mut Surface) {
-    unsafe { &mut *h }.render(unsafe { &mut *s })
 }
 
 /// Shows a line the user sent, on the calling thread's home view if it has

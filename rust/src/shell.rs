@@ -5,7 +5,7 @@ use alloc::vec;
 
 use crate::apps::{self, Started};
 use crate::rt::{self, StrBuf, console, lossy, ui};
-use crate::{agent, fs, home, kprint, net, sys};
+use crate::{agent, fs, home, kprint, net, sys, wm};
 
 const HELP: &str = "Type what you want in plain language; the agent answers or builds an app for it.
 Commands:
@@ -29,19 +29,12 @@ Japanese input: Option/Alt+Space switches romaji -> kana (あ) on and off.
   /reboot, /halt
 ";
 
-const LAYOUT_FULL: i32 = 0;
-const LAYOUT_WINDOWS: i32 = 1;
-
 fn graphical() -> bool {
-    unsafe { sys::wm_active() != 0 }
+    wm::active()
 }
 
 fn full_screen() -> bool {
-    unsafe { sys::wm_layout() == LAYOUT_FULL }
-}
-
-fn display() -> (i32, i32, i32) {
-    unsafe { (sys::wm_display_w(), sys::wm_display_h(), sys::wm_scale()) }
+    wm::layout() == wm::LAYOUT_FULL
 }
 
 /// The number a text starts with (0 if none), like C's atoi.
@@ -71,7 +64,7 @@ fn cmd_info() {
         kprint!("network: no device\n");
     }
     if graphical() {
-        let (w, h, scale) = display();
+        let (w, h, scale) = wm::display();
         let layout = if full_screen() { "full screen" } else { "windows" };
         let pointer = if unsafe { sys::mouse_absolute() } != 0 { "absolute" } else { "relative" };
         kprint!("display: graphical ({layout}), {w}x{h}, scale {scale}, {pointer} pointer\n");
@@ -102,7 +95,7 @@ fn cmd_display(arg: &str) {
         }
     }
     if w == 0 || h == 0 {
-        let (w, h, scale) = display();
+        let (w, h, scale) = wm::display();
         kprint!(
             "display: {w}x{h}, scale {scale}\n\
              usage: /display <width>x<height> [scale]\n  \
@@ -112,11 +105,10 @@ fn cmd_display(arg: &str) {
         );
         return;
     }
-    let mut err = StrBuf::new();
-    if unsafe { sys::wm_set_display(w, h, scale, err.as_ptr()) } != 0 {
-        kprint!("[error] {}\n", lossy(err.as_bytes()));
+    if let Err(e) = wm::set_display(w, h, scale) {
+        kprint!("[error] {e}\n");
     } else {
-        let (w, h, scale) = display();
+        let (w, h, scale) = wm::display();
         kprint!("display: {w}x{h}, scale {scale}\n");
     }
 }
@@ -127,8 +119,8 @@ fn cmd_layout(arg: &str) {
         return;
     }
     match arg {
-        "full" => unsafe { sys::wm_set_layout(LAYOUT_FULL) },
-        "windows" => unsafe { sys::wm_set_layout(LAYOUT_WINDOWS) },
+        "full" => wm::set_layout(wm::LAYOUT_FULL),
+        "windows" => wm::set_layout(wm::LAYOUT_WINDOWS),
         _ => kprint!(
             "layout: {}\n\
              usage: /layout full      one app fills the screen (switch by dragging the bottom bar)\n       \

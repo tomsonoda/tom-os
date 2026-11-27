@@ -1,6 +1,7 @@
 //! Linear framebuffer (Bochs/QEMU "BGA" display interface), fonts and 2D
 //! drawing.
 
+use alloc::vec::Vec;
 use core::ffi::c_char;
 
 use crate::pci::{self, inw, outw};
@@ -266,7 +267,7 @@ static FONT: KCell<[[u8; 16]; 256]> = KCell::new([[0; 16]; 256]);
 
 /// The Japanese font (see tools/make_font.py): "TJF1", the number of
 /// glyphs, their code points in ascending order, then 32 bytes per glyph.
-static FONT_JA: &[u8] = include_bytes!("../../gui/font_ja.bin");
+static FONT_JA: &[u8] = include_bytes!("../assets/font_ja.bin");
 
 /// The 16x16 glyph of a full-width character (two bytes per row), if the
 /// font has it.
@@ -375,8 +376,7 @@ fn probe() -> Option<u64> {
 }
 
 /// Video memory in bytes; 0 without a usable adapter.
-#[unsafe(no_mangle)]
-pub extern "C" fn fb_vram() -> usize {
+pub fn fb_vram() -> usize {
     if probe().is_none() {
         return 0;
     }
@@ -386,15 +386,49 @@ pub extern "C" fn fb_vram() -> usize {
     }
 }
 
-/// The screen. C code reads it directly; it is set by `fb_init` only.
-#[unsafe(no_mangle)]
-pub static mut fb_screen: Surface = Surface::empty();
+/// The screen; set by `fb_init` only.
+static SCREEN: KCell<Surface> = KCell::new(Surface::empty());
+
+/// The screen's size in pixels (0 x 0 before `fb_init`).
+pub fn screen_size() -> (i32, i32) {
+    SCREEN.with(|s| (s.w, s.h))
+}
+
+/// Copies the rectangle x0..x1, y0..y1 of an image with `sw` pixels per row
+/// to the screen, every pixel enlarged to a `scale` x `scale` block.
+/// `line` is scratch space.
+pub fn show(src: &[u32], sw: usize, (x0, y0, x1, y1): (usize, usize, usize, usize), scale: usize, line: &mut Vec<u32>) {
+    SCREEN.with(|fb| {
+        let (fw, fh) = (fb.w as usize, fb.h as usize);
+        if fb.px.is_null() || x0 >= x1 || x1 > sw || x1 * scale > fw {
+            return;
+        }
+        for y in y0..y1 {
+            let Some(row) = src.get(y * sw + x0..y * sw + x1) else { return };
+            line.clear();
+            for &p in row {
+                line.extend(core::iter::repeat_n(p, scale));
+            }
+            for k in 0..scale {
+                if y * scale + k < fh {
+                    fb.row(y * scale + k, x0 * scale, x1 * scale).copy_from_slice(line);
+                }
+            }
+        }
+    })
+}
+
+/// Runs `f` with a surface over a buffer of `w` x `h` pixels.
+pub fn draw_on<R>(px: &mut [u32], w: i32, h: i32, f: impl FnOnce(&mut Surface) -> R) -> R {
+    assert!(w >= 0 && h >= 0 && px.len() >= w as usize * h as usize);
+    // SAFETY: the buffer is large enough and is borrowed for as long as the surface lives
+    f(&mut unsafe { Surface::new(px.as_mut_ptr(), w, h) })
+}
 
 /// Switches to a linear framebuffer: 0 on success, -2 if the adapter has
 /// too little video memory, -1 if graphics are unavailable or the mode
 /// failed.
-#[unsafe(no_mangle)]
-pub extern "C" fn fb_init(w: i32, h: i32) -> i32 {
+pub fn fb_init(w: i32, h: i32) -> i32 {
     let Some(addr) = probe() else { return -1 };
     if w <= 0 || h <= 0 || w > 0xFFFF || h > 0xFFFF {
         return -1;
@@ -416,95 +450,22 @@ pub extern "C" fn fb_init(w: i32, h: i32) -> i32 {
     }
     // SAFETY: the adapter now shows w * h pixels at `addr`, which is mapped
     // and has at least that much video memory (checked above)
-    unsafe { (&raw mut fb_screen).write(Surface::new(addr as *mut u32, w, h)) };
+    SCREEN.with(|s| *s = unsafe { Surface::new(addr as *mut u32, w, h) });
     0
 }
 
 // ------------------------------------------------------------ C interface
-// For the window system, which is still C. Every `s` must point to a
-// surface set up by `surface_init` (or `fb_screen`), every image to as many
-// pixels as its size says, every text to `n` bytes.
-
-fn bg(v: i64) -> Option<u32> {
-    (v >= 0).then_some(v as u32)
-}
-
-/// # Safety
-/// `px` must point to `w * h` pixels for as long as the surface is used.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn surface_init(s: *mut Surface, px: *mut u32, w: i32, h: i32) {
-    unsafe { s.write(Surface::new(px, w.max(0), h.max(0))) }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_fill(s: *mut Surface, x: i32, y: i32, w: i32, h: i32, c: u32) {
-    unsafe { &mut *s }.fill(x, y, w, h, c)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_round(s: *mut Surface, x: i32, y: i32, w: i32, h: i32, r: i32, c: u32) {
-    unsafe { &mut *s }.round(x, y, w, h, r, c)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_pixel(s: *mut Surface, x: i32, y: i32, c: u32) {
-    unsafe { &mut *s }.pixel(x, y, c)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_line(s: *mut Surface, x0: i32, y0: i32, x1: i32, y1: i32, c: u32) {
-    unsafe { &mut *s }.line(x0, y0, x1, y1, c)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_circle(s: *mut Surface, cx: i32, cy: i32, r: i32, c: u32, fill: i32) {
-    unsafe { &mut *s }.circle(cx, cy, r, c, fill != 0)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_glyph(s: *mut Surface, x: i32, y: i32, ch: u8, fg: u32, bg_color: i64, scale: i32) {
-    unsafe { &mut *s }.glyph(x, y, ch, fg, bg(bg_color), scale)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_glyph16(s: *mut Surface, x: i32, y: i32, bits: *const [u8; 32], fg: u32, bg_color: i64, scale: i32) {
-    unsafe { &mut *s }.glyph16(x, y, unsafe { &*bits }, fg, bg(bg_color), scale)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_text(s: *mut Surface, x: i32, y: i32, text: *const c_char, n: usize, fg: u32, bg_color: i64, scale: i32) {
-    let text = unsafe { core::slice::from_raw_parts(text as *const u8, n) };
-    unsafe { &mut *s }.text(x, y, text, fg, bg(bg_color), scale)
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_blit(dst: *mut Surface, dx: i32, dy: i32, src: *const u32, sw: i32, sh: i32) {
-    if sw > 0 && sh > 0 {
-        let src = unsafe { core::slice::from_raw_parts(src, sw as usize * sh as usize) };
-        unsafe { &mut *dst }.blit(dx, dy, src, sw)
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn gfx_blit_resize(dst: *mut Surface, dx: i32, dy: i32, dw: i32, dh: i32, src: *const u32, sw: i32, sh: i32) {
-    if sw > 0 && sh > 0 {
-        let src = unsafe { core::slice::from_raw_parts(src, sw as usize * sh as usize) };
-        unsafe { &mut *dst }.blit_resize(dx, dy, dw, dh, src, sw)
-    }
-}
+// For the console, which is still C.
 
 /// Decodes one character of `n` (at least 1) bytes; returns the bytes used.
+///
+/// # Safety
+/// `s` must point to `n` bytes and `cp` to a writable u32.
 #[unsafe(export_name = "utf8_decode")]
 pub unsafe extern "C" fn utf8_decode_c(s: *const c_char, n: usize, cp: *mut u32) -> i32 {
     let (c, used) = utf8_decode(unsafe { core::slice::from_raw_parts(s as *const u8, n.max(1)) });
     unsafe { cp.write(c) };
     used as i32
-}
-
-/// The glyph of a full-width character, or NULL.
-#[unsafe(export_name = "font_wide")]
-pub extern "C" fn font_wide_c(cp: u32) -> *const u8 {
-    font_wide(cp).map_or(core::ptr::null(), |g| g.as_ptr())
 }
 
 /// Screen columns a character takes: 2 for full-width Japanese, else 1.

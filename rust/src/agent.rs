@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::json::{self, Json};
 use crate::rt::{self, KCell, StrBuf, console, cstr, lossy, ui};
 use crate::apps::{self, Started};
-use crate::{fs, http, kprint, net, sys, tcp};
+use crate::{fs, http, kprint, net, sys, tcp, wm};
 
 const MAX_STEPS: usize = 24;
 const TOOL_RESULT_MAX: usize = 12000;
@@ -104,7 +104,7 @@ fn build_request(conv: &[Message], model: &[u8]) -> Vec<u8> {
     b.extend_from_slice(b",\"stream\":false,\"messages\":[{");
     json::field(&mut b, "role", b"system");
     b.push(b',');
-    let mode = if unsafe { sys::wm_active() } != 0 {
+    let mode = if wm::active() {
         "\n\nGraphical mode is ON: gfx is available and apps run in windows."
     } else {
         "\n\nGraphical mode is OFF (text mode): gfx is not available."

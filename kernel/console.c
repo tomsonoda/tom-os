@@ -113,7 +113,7 @@ static void term_set(term *t, int i, u16 cell, u32 uc) {
 }
 
 static void term_put_cp(term *t, u32 cp) {
-    int wide = t->uc && cp >= 0x80 && font_wide(cp);
+    int wide = t->uc && cp >= 0x80 && font_cells(cp) == 2;
     term_touch(t);
     if (cp >= 0x80 && !wide) cp = '?'; /* no glyph */
     if (wide && t->cx + 2 > t->cols) {
@@ -981,3 +981,6 @@ void console_init(void) {
     term_clear_range(&hwterm, 0, hwterm.cols * hwterm.rows);
     hw_cursor(&hwterm);
 }
+
+term *tty_term(tty *t) { return t ? t->term : NULL; }
+homeview *tty_home(tty *t) { return t ? t->home : NULL; }

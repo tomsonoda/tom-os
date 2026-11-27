@@ -14,7 +14,7 @@ Guess a number from 1 to 100: _
 
 tom-os does not use Linux or any other existing kernel. Boot code, console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in C and Rust with a NASM boot stub. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 1.9 MiB and boots instantly.
 
-The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, the home screen's chat view, 2D drawing and fonts, and the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access). Still C: the window manager and terminals, the other drivers, memory management and boot.
+The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, the window manager, the home screen's chat view, 2D drawing and fonts, and the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access). Still C: terminals, the keyboard, mouse and Japanese input, the other drivers, memory management and boot.
 
 The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but goes in a different direction. llm.asm is a chat REPL that runs model inference inside the kernel. tom-os starts with an agent that can use tools and a way to run the apps it creates.
 
@@ -317,10 +317,10 @@ python3 tools/claude_gateway.py
 | Lua 5.4 in Rust (rust/,       | rust/src/http.rs  HTTP/1.1 client |
 |  third_party/remedy-lua)      |          tcp.rs   TCP (one        |
 |   io / os / tomos / gfx /     |     connection, retransmission)   |
-|   sound, lua/lhost.c          |          net.rs   Ethernet, ARP,  |
+|   sound                       |          net.rs   Ethernet, ARP,  |
 | rust/src/fs.rs  in-memory FS  |                   IPv4            |
-| gui/wm.c   windows, focus,    |          virtio_net.rs, pci.rs    |
-|            compositor         |                   network card    |
+| rust/src/wm.rs  windows,      |          virtio_net.rs, pci.rs    |
+|            focus, compositor  |                   network card    |
 | rust/src/gfx.rs  framebuffer, |                                   |
 |            fonts, 2D drawing  |                                   |
 +-------------------------------+----------------------------------+
@@ -403,4 +403,4 @@ end
 
 `third_party/remedy-lua` is RemedyLua 0.1.2 by Ahmi Darrow, licensed MIT OR Apache-2.0, with the changes described in `third_party/remedy-lua/README.md`. It depends on the `hashbrown` (MIT OR Apache-2.0) and `libm` (MIT) crates, which cargo downloads.
 
-`gui/font_ja.bin` is converted by `tools/make_font.py` from the Shinonome (東雲) 16-dot gothic font (`shnmk16`, Debian package `xfonts-shinonome`), which its authors placed in the public domain.
+`rust/assets/font_ja.bin` is converted by `tools/make_font.py` from the Shinonome (東雲) 16-dot gothic font (`shnmk16`, Debian package `xfonts-shinonome`), which its authors placed in the public domain.

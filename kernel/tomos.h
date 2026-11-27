@@ -88,6 +88,8 @@ tty *console_tty0(void);              /* the shell's tty (serial + first screen)
 tty *tty_create(int cols, int rows);  /* tty with its own terminal buffer */
 void term_resize(term *t, int cols, int rows); /* keeps the lines around the cursor */
 void tty_destroy(tty *t);
+term *tty_term(tty *t);                /* for Rust, which does not know the struct */
+struct homeview *tty_home(tty *t);
 void tty_input(tty *t, const char *bytes); /* deliver typed characters */
 void console_poll_input(void);        /* drain serial / keyboard / mouse */
 void mouse_init(void);
@@ -119,7 +121,6 @@ int agent_convert_kana(const char *kana, const char *avoid, strbuf *out, strbuf 
 
 /* ---- threads (kernel/sched.c): cooperative, round-robin ---- */
 typedef struct thread thread;
-struct window;
 thread *thread_spawn(void (*fn)(void *), void *arg, tty *t);
 void thread_exit(void) __attribute__((noreturn));
 void thread_kill(thread *t);          /* ask a thread to stop */
@@ -127,8 +128,8 @@ int thread_killed(void);              /* has the calling thread been asked to st
 tty *thread_tty(void);
 struct homeview *thread_home(void);    /* the calling thread's home view, or NULL */
 void thread_set_tty(tty *t);
-struct window *thread_window(void);
-void thread_set_window(struct window *w);
+size_t thread_window(void);           /* the window id of the thread's app, or 0 */
+void thread_set_window(size_t w);
 void *thread_data(void);              /* per-thread slot used by the Lua runtime */
 void thread_set_data(void *p);
 void sched_yield(void);               /* let other threads run; caller stays busy */
@@ -159,93 +160,36 @@ int sound_busy(void *owner);
 u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off); /* rust/src/pci.rs */
 void pci_write(u8 bus, u8 dev, u8 fn, u8 off, u32 v);
 
-/* ---- graphics (rust/src/gfx.rs) ---- */
-typedef struct surface {
-    u32 *px; /* 0x00RRGGBB */
-    int w, h;
-    int cx0, cy0, cx1, cy1; /* clip rectangle, exclusive upper bounds */
-} surface;
-/* Switches to a linear framebuffer: 0 on success, -2 if the adapter has too
- * little video memory, -1 if graphics are unavailable or the mode failed. */
-int fb_init(int w, int h);
-size_t fb_vram(void);
-extern surface fb_screen;
-void surface_init(surface *s, u32 *px, int w, int h);
-void gfx_fill(surface *s, int x, int y, int w, int h, u32 c);
-void gfx_pixel(surface *s, int x, int y, u32 c);
-void gfx_line(surface *s, int x0, int y0, int x1, int y1, u32 c);
-void gfx_circle(surface *s, int cx, int cy, int r, u32 c, int fill);
-void gfx_glyph(surface *s, int x, int y, u8 ch, u32 fg, long bg, int scale); /* bg < 0: transparent */
-void gfx_text(surface *s, int x, int y, const char *str, size_t n, u32 fg, long bg, int scale);
-void gfx_blit(surface *dst, int dx, int dy, const u32 *src, int sw, int sh);
+/* ---- text (rust/src/gfx.rs) ---- */
 /* UTF-8: decodes one character, returns the bytes used (at least 1). */
 int utf8_decode(const char *s, size_t n, u32 *cp);
-/* Japanese font: 16x16 glyph (two bytes per row) or NULL if there is none. */
-const u8 *font_wide(u32 cp);
 /* Screen columns a character takes: 2 for full-width Japanese, else 1. */
 int font_cells(u32 cp);
-void gfx_glyph16(surface *s, int x, int y, const u8 *bits, u32 fg, long bg, int scale);
-void gfx_round(surface *s, int x, int y, int w, int h, int r, u32 c); /* filled, rounded corners */
-void gfx_blit_resize(surface *dst, int dx, int dy, int dw, int dh, const u32 *src, int sw, int sh);
 
-/* ---- window manager (gui/wm.c) ---- */
-typedef struct window {
-    int used;
-    int x, y, w, h;   /* content rectangle on screen */
-    char title[48];
-    u32 *front;       /* what the compositor shows */
-    u32 *back;        /* canvas the app draws on (graphics windows) */
-    int canvas;       /* 0: shows `tty->term`, 1: shows the canvas */
-    tty *tty;
-    thread *owner;    /* killed when the window is closed; NULL = not closable */
-    u8 keys[256];     /* keys currently held (scancode, +0x80 for extended) */
-    int mx, my, mb;   /* mouse position inside the content, buttons */
-    int mb_latch;     /* buttons pressed since the app last looked (short clicks) */
-    u64 last_flip;
-} window;
+/* ---- window manager (rust/src/wm.rs) ---- */
+/* Windows are named by an id; 0 means none. */
+typedef size_t window_id;
 /* The screen is w x h device pixels; everything is drawn at 1/scale of that
  * and enlarged by `scale` (1 to 4) on the way out. scale 0 picks a default. */
 int wm_init(int w, int h, int scale); /* 0 if graphics are available */
-int wm_set_display(int w, int h, int scale, strbuf *err); /* change at run time */
-int wm_display_w(void);
-int wm_display_h(void);
-int wm_scale(void);
 int wm_default_scale(int w, int h);
 int wm_active(void);
 void wm_tick(void);
-window *wm_create(const char *title, tty *t, thread *owner);
-void wm_destroy(window *w);
-int wm_set_canvas(window *w, int width, int height);
-void wm_set_text(window *w);
-int wm_is_canvas(const window *w);        /* for Rust, which does not know the struct */
-void wm_set_owner(window *w, thread *owner);
-void wm_present(window *w);
-void wm_set_title(window *w, const char *title);
+window_id wm_create(const char *title, tty *t, thread *owner);
 void wm_key(int code, int down, int alt, const char *chars);
 void wm_mouse(int dx, int dy, int buttons);          /* relative pointer (PS/2) */
 void wm_mouse_abs(int x, int y, int buttons, int wheel); /* absolute pointer, 0..65535 */
-/* Layouts: full screen (one app at a time, like a phone) or overlapping windows. */
 enum { LAYOUT_FULL, LAYOUT_WINDOWS };
 void wm_set_layout(int layout);
-void wm_set_home(window *w); /* the shell: the home screen apps open on top of */
+void wm_set_home(window_id w); /* the shell: the home screen apps open on top of */
 void wm_ime_changed(void);   /* redraw the input-method indicator */
 
 /* ---- home screen chat view (rust/src/home.rs) ---- */
 homeview *home_create(tty *t);
 void home_feed(homeview *h, const char *s, size_t n);
-void home_add_user(homeview *h, const char *line);
 /* The line being typed: text, cursor (byte offset), and the composition at the cursor. */
 void home_set_input(homeview *h, const char *line, size_t n, size_t cur, const char *comp, size_t cn,
                     int converted);
-void home_render(homeview *h, surface *s);
-int home_dirty(const homeview *h);
-void home_invalidate(homeview *h);
-void home_click(homeview *h, int x, int y);
-void home_scroll(homeview *h, int dy);
-int wm_layout(void);
-void wm_canvas_max(int *w, int *h); /* largest canvas an app can use */
-int wm_screen_w(void);
-int wm_screen_h(void);
 
 /* ---- memory (kernel/mem.c) ---- */
 void mem_init(u32 mb_info);
