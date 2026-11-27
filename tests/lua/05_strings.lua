@@ -1,0 +1,17 @@
+for w in ("one two  three"):gmatch("%a+") do io.write("[", w, "]") end print()
+for k, v in ("a=1, b=22, c=333"):gmatch("(%w+)=(%w+)") do io.write(k, ":", v, " ") end print()
+print(("hello world"):gsub("o", "0"), ("hello"):gsub("l", {l = "L"}), ("abc"):gsub("%w", function(c) return c:upper() .. "." end), ("abc"):gsub("", "-"), ("hello"):gsub("l", "L", 1))
+print(("2024-01-15"):match("(%d+)-(%d+)-(%d+)"), ("  x  "):gsub("^%s+", ""), ("a.b.c"):gsub("%.", "/"), ("x"):rep(0) == "", ("%d"):gsub("%%", "%%%%"))
+print(("key = value # c"):match("^(%w+)%s*=%s*(%w+)"), ("[tag]"):match("%[(.-)%]"), ("f(a,b)"):match("%((.*)%)"), ("abc123"):match("%a+()"), ("THE (quick) fox"):find("%((%a+)%)"))
+print(("hello"):find("l"), ("hello"):find("xyz"), ("hello"):find(""), ("hello"):find("", 10), ("a+b"):find("+", 1, true), ("abc"):match(".-b"), ("aaa"):match("a-$"), ("x1y22"):gsub("%d+", "#"))
+print(("%bxy"):len(), ("(a(b)c)"):match("%b()"), ("THE END"):match("%f[%a]%a+$"), ("hello.world"):match("^(.-)%.(.*)$"), ("CamelCaseString"):gsub("(%u)", " %1"))
+print(string.format("%-8s|%8s|%08.3f|%+d|% d|%#x|%.0f|%5.1f%%", "ab", "cd", 3.14159, 5, 5, 255, 2.5, 99.5), string.format("%q", 1/3), string.format("%10.4s|", "abcdefgh"))
+print(tostring(12345678901234), 2^31, 1e3, 123456.789e3, 0.1 + 0.2, 1/0, -1/0, string.format("%.14g", 0.1), string.format("%5.2s|", "xyz"), #string.format("%20s", "x"))
+print(utf8.char(228, 8364, 0x65E5), utf8.len("日本語"), #"日本語", utf8.codepoint("日本", 1, -1)) for p, c in utf8.codes("aé日") do io.write(p, ":", c, " ") end print(utf8.offset("日本語", 2), utf8.len("\xff"), utf8.charpattern:byte(1, -1))
+print(("abc"):byte(-1), ("\65\066\x43\u{44}\z
+      E"), "tab\there", 'q"uote', [[long
+string]], [==[with ]] inside]==], "\\n", #"\0abc", ("a\0b"):len())
+print(tostring(1e15), tostring(1e14), tostring(123456789012345678), tostring(0.1), tostring(-0.0), tostring(1e-5), tostring(2^63), tostring(math.mininteger), 255 // 1 | 0, string.format("%d", "10"))
+print(("x"):rep(3), ("ab"):rep(2, "-"), ("Hello World"):len(), ("abc") < ("abd"), ("a"):upper():lower(), ("%s=%s"):format("k", "v"), ("test"):sub(0), ("test"):sub(10), ("test"):sub(-100, 2), ("test"):sub(3, 2))
+print(tostring(tonumber("0x")), tonumber("1 2"), tonumber(""), tonumber("1e"), tonumber("0b1"), tonumber(".5"), tonumber("5."), tonumber("- 1"), tonumber("-0x10"), tonumber("1_000"), math.tointeger("8"), tonumber("  0x1F  "), tonumber("inf"), tonumber("nan"))
+print(string.pack and #string.pack("i4", 7), string.rep("ab", 3, ","), table.concat({("a,b;c"):match("([^,;]+)[,;]([^,;]+)[,;]([^,;]+)")}, "+"), os.time{year=2024, month=1, day=1, hour=0} ~= nil, type(os.clock()), type(os.date("%Y")))

@@ -1,0 +1,17 @@
+[one][two][three]
+a:1 b:22 c:333 
+hell0 w0rld	heLLo	A.B.C.	-a-b-c-	heLlo	1
+2024	x  	a/b/c	true	%%d	1
+key	tag	a,b	4	5	11	quick
+3	nil	1	nil	2	ab	aaa	x#y#	2
+4	(a(b)c)	END	hello	 Camel Case String	3
+ab      |      cd|0003.142|+5| 5|0xff|2| 99.5%	0x1.5555555555555p-2	      abcd|
+12345678901234	2147483648.0	1000.0	123456789.0	0.3	inf	-inf	0.1	   xy|	20
+ä€日	3	9	26085	26412
+1:97 2:233 4:26085 4	nil	91	0	45	127	194	45	253	93	91	128	45	191	93	42
+99	ABCDE	tab	here	q"uote	long
+string	with ]] inside	\n	4	3
+1e+15	1e+14	123456789012345678	0.1	-0.0	1e-05	9.2233720368548e+18	-9223372036854775808	255	10
+xxx	ab-ab	11	true	a	k=v	test		te	
+nil	nil	nil	nil	nil	0.5	5.0	nil	-16	nil	8	31	nil	nil
+4	ab,ab,ab	a+b+c	true	number	string

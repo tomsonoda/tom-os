@@ -1,0 +1,13 @@
+Rex says woof	Rex fetches	true	nil
+(4,6)	(2,2)	11	(2,4)	(2,4)	true	true	true	true	false	2	(-1,-2)	(1,2)|(3,4)	(1,2)|s	1	idiv	mod
+foo!
+2	get foo;set bar
+1	false	locked	false	cannot change a protected metatable
+2	0
+1=1 2=4 3=9 
+custom	true
+nil
+false	03_meta.lua:31: attempt to perform arithmetic on a table value
+false	03_meta.lua:31: attempt to compare two table values
+false	03_meta.lua:31: attempt to get length of a number value
+false	03_meta.lua:31: attempt to call a nil value (local 'n')

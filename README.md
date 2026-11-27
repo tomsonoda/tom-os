@@ -12,7 +12,9 @@ tom-os> make a number guessing game
 Guess a number from 1 to 100: _
 ```
 
-tom-os does not use Linux or any other existing kernel. Boot code, console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON and the agent loop are all written in this repository, in C with a NASM boot stub. The only third-party code is Lua 5.4 (`third_party/lua`, unmodified), which is the app runtime. The whole kernel is about 270 KiB and boots instantly.
+tom-os does not use Linux or any other existing kernel. Boot code, console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in C with a NASM boot stub. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system), and the bindings between apps and the kernel are Rust too (`rust/`). The kernel is about 1.9 MiB and boots instantly.
+
+The kernel is being moved from C to Rust piece by piece; the Lua runtime was the first piece.
 
 The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but goes in a different direction. llm.asm is a chat REPL that runs model inference inside the kernel. tom-os starts with an agent that can use tools and a way to run the apps it creates.
 
@@ -37,6 +39,7 @@ First milestone. Runs on x86-64 under QEMU.
 
 - `gcc`, `nasm`, `binutils`, `make` (Linux), or on macOS a cross toolchain:
   `brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu`
+- Rust through [rustup](https://rustup.rs) (on macOS: `brew install rustup`, then `rustup-init`). The build uses the nightly toolchain named in `rust/rust-toolchain.toml`; rustup downloads it on the first `make`.
 - `qemu-system-x86_64`
 - Python 3 (for the tests and the host-side gateways)
 
@@ -51,7 +54,7 @@ make test-iso # runs the same test booting from the ISO
 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
-`make test` does not use a real LLM. `tests/sound_test.py` records what QEMU plays (its WAV backend) and checks pitches and timing. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` (windows layout) and `tests/phone_test.py` (full-screen layout) cover graphical mode: they send key presses and absolute mouse movement through QEMU and check pixels in screenshots (switching apps by dragging, the card view, clicks reaching apps, a graphics app reacting to held keys).
+`make test` does not use a real LLM. `tests/lua_test.py` runs the scripts in `tests/lua` inside tom-os and compares their output with what C Lua 5.4 prints, and checks that an app cannot exhaust memory or ignore `Ctrl-C`. `tests/sound_test.py` records what QEMU plays (its WAV backend) and checks pitches and timing. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` (windows layout) and `tests/phone_test.py` (full-screen layout) cover graphical mode: they send key presses and absolute mouse movement through QEMU and check pixels in screenshots (switching apps by dragging, the card view, clicks reaching apps, a graphics app reacting to held keys).
 
 ## Running
 
@@ -238,7 +241,8 @@ The steps in this section are based on testing with QEMU on Linux. They have not
 Apple's compiler cannot produce the kernel, so install a cross toolchain. The Makefile uses it automatically on macOS.
 
 ```sh
-brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu
+brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu rustup
+rustup-init    # once; accept the defaults, then open a new terminal
 make
 make test      # optional
 make run-gui   # graphical desktop; or: make run for text mode in the terminal
@@ -310,9 +314,11 @@ python3 tools/claude_gateway.py
 |          run_lua (captured, for checks) launch_app                |
 | apps  (agent/apps.c)    one thread + terminal + window per app    |
 +-------------------------------+----------------------------------+
-| Lua 5.4 + lua/lbind.c         | net/http.c   HTTP/1.1 client      |
-|   io / os / tomos / gfx       | net/tcp.c    TCP (one connection, |
-| fs/ramfs.c  in-memory FS      |              retransmission)      |
+| Lua 5.4 in Rust (rust/,       | net/http.c   HTTP/1.1 client      |
+|  third_party/remedy-lua)      |                                   |
+|   io / os / tomos / gfx /     | net/tcp.c    TCP (one connection, |
+|   sound, lua/lhost.c          |              retransmission)      |
+| fs/ramfs.c  in-memory FS      |                                   |
 | gui/wm.c   windows, focus,    | net/net.c    Ethernet, ARP, IPv4  |
 |            compositor         |                                   |
 | gui/gfx.c  framebuffer, 2D    |                                   |
@@ -331,7 +337,7 @@ python3 tools/claude_gateway.py
 - Single address space. Threads are cooperative: an app gives up the CPU whenever it waits for input, sleeps or shows a frame, and the Lua runtime also yields every few thousand instructions, so a busy app cannot freeze the others.
 - All devices are polled; interrupts are only used to wake the CPU from `HLT`, so the system does not spin while idle.
 - Graphics use the linear framebuffer of QEMU's standard display adapter (1024x768). The window manager keeps one buffer per window and redraws only the part of the screen that changed. The 8x16 font is read from the VGA adapter at boot.
-- Every app run gets a fresh Lua state with a memory limit. `Ctrl-C`, closing the window and time limits can always stop it.
+- Every app run gets a fresh Lua state with a memory limit. `Ctrl-C`, closing the window and time limits can always stop it; a script cannot catch that stop with `pcall`. The interpreter contains no `unsafe` code, so a bug in it cannot corrupt kernel memory the way a bug in a C interpreter could.
 - The LLM protocol is chat completions JSON with `tools`. Responses with `Content-Length` and with chunked encoding are both handled.
 
 ### API available to apps
@@ -394,6 +400,6 @@ end
 
 ## License
 
-`third_party/lua` is under the MIT license of Lua.org, PUC-Rio (see `third_party/lua/README.md`).
+`third_party/remedy-lua` is RemedyLua 0.1.2 by Ahmi Darrow, licensed MIT OR Apache-2.0, with the changes described in `third_party/remedy-lua/README.md`. It depends on the `hashbrown` (MIT OR Apache-2.0) and `libm` (MIT) crates, which cargo downloads.
 
 `gui/font_ja.bin` is converted by `tools/make_font.py` from the Shinonome (東雲) 16-dot gothic font (`shnmk16`, Debian package `xfonts-shinonome`), which its authors placed in the public domain.

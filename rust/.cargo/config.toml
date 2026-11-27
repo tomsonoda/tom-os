@@ -1,0 +1,8 @@
+# The kernel target: bare-metal x86-64 with SSE2 (floats, like the C side)
+# and no red zone. core and alloc are compiled for it from source.
+[build]
+target = "x86_64-tomos.json"
+
+[unstable]
+build-std = ["core", "alloc"]
+json-target-spec = true

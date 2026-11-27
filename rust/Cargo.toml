@@ -1,0 +1,16 @@
+[package]
+name = "tomos-rt"
+version = "0.1.0"
+edition = "2024"
+description = "tom-os kernel code written in Rust: the Lua runtime bindings"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+remedy-lua = { path = "../third_party/remedy-lua" }
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+codegen-units = 1

@@ -1,0 +1,5 @@
+# A custom target and build-std need a nightly toolchain.
+[toolchain]
+channel = "nightly-2026-11-25"
+components = ["rust-src"]
+profile = "minimal"

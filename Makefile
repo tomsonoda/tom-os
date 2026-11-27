@@ -1,6 +1,9 @@
 # tom-os build
 #
-# The kernel is a freestanding x86-64 ELF, so it needs a GNU toolchain that
+# The Lua runtime is Rust and needs rustup: rust/rust-toolchain.toml selects
+# a nightly toolchain, which rustup downloads on the first build.
+#
+# The rest of the kernel is a freestanding x86-64 ELF, so it needs a GNU toolchain that
 # targets ELF. On Linux the system gcc works. On macOS install a cross
 # toolchain (brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu); it is
 # picked up automatically. Override with `make CROSS=<prefix>`.
@@ -18,14 +21,14 @@ QEMU    ?= qemu-system-x86_64
 GRUB_MKRESCUE ?= grub-mkrescue
 
 # Fail early with a hint instead of a confusing compiler error.
-REQUIRED := $(CC) $(LD) $(OBJCOPY) $(AS)
+REQUIRED := $(CC) $(LD) $(OBJCOPY) $(AS) cargo
 MISSING  := $(strip $(foreach t,$(REQUIRED),$(if $(shell command -v $(t) 2>/dev/null),,$(t))))
 ifneq ($(MISSING),)
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 ifeq ($(shell uname -s),Darwin)
-$(error Missing tools: $(MISSING). Install them with: brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu)
+$(error Missing tools: $(MISSING). Install them with: brew install nasm x86_64-elf-gcc x86_64-elf-binutils qemu rustup (then: rustup-init))
 else
-$(error Missing tools: $(MISSING). Install gcc, binutils and nasm)
+$(error Missing tools: $(MISSING). Install gcc, binutils, nasm and Rust (https://rustup.rs))
 endif
 endif
 endif
@@ -40,9 +43,13 @@ CFLAGS := -std=gnu11 -O2 -g -ffreestanding -fno-stack-protector -fno-pic -fno-pi
 WARN   := -Wall -Wextra
 
 SRCS := $(wildcard kernel/*.c net/*.c lib/*.c fs/*.c agent/*.c lua/*.c gui/*.c)
-LUA_SRCS := $(wildcard third_party/lua/*.c)
+# The Lua runtime is Rust: rust/ (bindings) and third_party/remedy-lua
+# (the interpreter), built by cargo into one static library.
+RUSTLIB := rust/target/x86_64-tomos/release/libtomos_rt.a
+RUST_SRCS := $(shell find rust/src third_party/remedy-lua/src -name '*.rs') rust/Cargo.toml \
+             rust/x86_64-tomos.json third_party/remedy-lua/Cargo.toml
 OBJS := $(BUILD)/arch/x86_64/boot.o $(BUILD)/gui/font_data.o \
-        $(SRCS:%.c=$(BUILD)/%.o) $(LUA_SRCS:%.c=$(BUILD)/%.o)
+        $(SRCS:%.c=$(BUILD)/%.o)
 
 KERNEL := $(BUILD)/tomos.elf
 
@@ -80,8 +87,12 @@ ISO := $(BUILD)/tomos.iso
 
 all: $(KERNEL)
 
-$(KERNEL): $(OBJS) linker.ld
-	$(LD) -n -nostdlib -z max-page-size=0x1000 -z noexecstack --no-warn-rwx-segments -T linker.ld -o $(BUILD)/tomos64.elf $(OBJS)
+$(RUSTLIB): $(RUST_SRCS)
+	+cd rust && cargo build --release
+
+$(KERNEL): $(OBJS) $(RUSTLIB) linker.ld
+	$(LD) -n -nostdlib -z max-page-size=0x1000 -z noexecstack --no-warn-rwx-segments --gc-sections \
+	    -T linker.ld -o $(BUILD)/tomos64.elf $(OBJS) $(RUSTLIB)
 	$(OBJCOPY) -O elf32-i386 --strip-debug $(BUILD)/tomos64.elf $@
 	@ls -l $@ | awk '{printf "built %s (%d KiB)\n", $$NF, $$5 / 1024}'
 
@@ -92,10 +103,6 @@ $(BUILD)/arch/x86_64/boot.o: arch/x86_64/boot.asm
 $(BUILD)/gui/font_data.o: gui/font_data.asm gui/font_ja.bin
 	@mkdir -p $(dir $@)
 	$(AS) -f elf64 $< -o $@
-
-$(BUILD)/third_party/lua/%.o: third_party/lua/%.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -w -c $< -o $@
 
 $(BUILD)/%.o: %.c kernel/tomos.h
 	@mkdir -p $(dir $@)
@@ -117,6 +124,7 @@ run-vga: $(KERNEL)
 
 test: $(KERNEL)
 	python3 tests/boot_test.py
+	python3 tests/lua_test.py
 	python3 tests/gui_test.py
 	python3 tests/phone_test.py
 	python3 tests/ime_test.py
@@ -146,6 +154,6 @@ test-iso: $(ISO)
 	TOMOS_ISO=$(ISO) python3 tests/ime_test.py
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf $(BUILD) rust/target
 
 .PHONY: all run run-gui run-vga test iso run-iso test-iso clean

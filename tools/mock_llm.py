@@ -6,6 +6,7 @@ app generation) can be exercised without a real model. It can also be run by
 hand:  python3 tools/mock_llm.py 8080
 """
 import json
+import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,6 +64,25 @@ def reply_for(req):
         import time
         time.sleep(4)
         return {"role": "assistant", "content": "slow reply"}, False
+
+    if user_text.startswith("compat "):
+        # tests/lua_test.py: store a script, run it, compare with C Lua's output
+        name = user_text.split()[1]
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "lua")
+        if len(tool_results) == 0:
+            code = open(os.path.join(here, name + ".lua"), encoding="utf-8", errors="surrogateescape").read()
+            return tool_call("call_c1", "write_file", {"path": "%s.lua" % name, "content": code}), False
+        if len(tool_results) == 1:
+            return tool_call("call_c2", "run_lua", {"code": 'dofile("%s.lua")' % name}), False
+        want = open(os.path.join(here, name + ".expected"), encoding="utf-8", errors="replace").read().rstrip("\n")
+        got = tool_results[1]["content"].rstrip("\n")
+        if got == want:
+            return {"role": "assistant", "content": "COMPAT %s OK" % name}, False
+        g, w = got.split("\n"), want.split("\n")
+        for i in range(max(len(g), len(w))):
+            gl, wl = (g[i] if i < len(g) else "<missing>"), (w[i] if i < len(w) else "<missing>")
+            if gl != wl:
+                return {"role": "assistant", "content": "COMPAT %s DIFF line %d\n got: %s\nwant: %s" % (name, i + 1, gl[:300], wl[:300])}, False
 
     if user_text == "big":
         return {"role": "assistant", "content": BIG_TEXT}, False
