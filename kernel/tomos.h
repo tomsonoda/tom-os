@@ -113,7 +113,7 @@ int console_readline(char *buf, size_t max, int history);
  * Alt+Space / Ctrl+Space / the kana and eisu keys, or the bytes 0x1D (toggle),
  * 0x1E (on), 0x1F (off) from the serial line. */
 int ime_enabled(void);
-/* agent/agent.c: asks the LLM to convert hiragana to kanji. `avoid` (may be
+/* rust/src/agent.rs: asks the LLM to convert hiragana to kanji. `avoid` (may be
  * NULL) is a previous answer to replace with another one. */
 int agent_convert_kana(const char *kana, const char *avoid, strbuf *out, strbuf *err);
 
@@ -283,14 +283,6 @@ int tcp_recv(void *buf, size_t max, int timeout_ms);
 void tcp_close(void);
 const char *net_strerror(int e);
 
-/* net/http.c: POST a JSON body, collect the decoded response body.
- * http_phase says what the current (or last) request is doing, for messages:
- * "connecting", "sending the request", "waiting for the reply",
- * "receiving the reply". */
-extern const char *http_phase;
-int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t body_len,
-                   strbuf *resp, int *status, int timeout_ms);
-
 /* ---- RAM filesystem (fs/ramfs.c) ---- */
 int fs_write(const char *path, const char *data, size_t len);
 const char *fs_read(const char *path, size_t *len); /* NULL if missing */
@@ -298,24 +290,6 @@ int fs_delete(const char *path);
 int fs_rename(const char *from, const char *to);
 /* Iterate: pass *it = NULL first; returns name or NULL at the end. */
 const char *fs_next(void **it, size_t *len);
-
-/* ---- JSON (lib/json.c) ---- */
-enum { J_NULL, J_BOOL, J_NUM, J_STR, J_ARR, J_OBJ };
-typedef struct jv {
-    int type;
-    struct jv *next;  /* sibling */
-    struct jv *child; /* first element / member */
-    char *key;        /* member name when inside an object */
-    char *str;
-    size_t len;
-    double num;
-} jv;
-jv *json_parse(const char *s, size_t len);
-void json_free(jv *v);
-jv *json_get(const jv *obj, const char *key);
-jv *json_at(const jv *arr, int idx);
-const char *json_str(const jv *v); /* NULL unless a string */
-void json_quote(strbuf *out, const char *s, size_t len);
 
 /* ---- Lua runtime (lua/lbind.c) ---- */
 /* Runs a chunk in a fresh Lua state. Interactive runs own the console; others
@@ -326,7 +300,7 @@ int lua_run(const char *name, const char *code, size_t len, int interactive, int
 
 /* ---- agent ---- */
 void shell_run(void);                    /* agent/shell.c */
-void agent_reset(void);                  /* agent/agent.c */
+void agent_reset(void);                  /* rust/src/agent.rs */
 void agent_turn(const char *user_text);
 const char *agent_setting(const char *key);         /* "llm", "model", "path" */
 int agent_set(const char *key, const char *value);  /* 0 on success */

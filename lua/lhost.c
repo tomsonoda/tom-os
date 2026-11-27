@@ -1,5 +1,5 @@
 /* Kernel side of the Lua runtime. The interpreter and the library bindings
- * are Rust (rust/src/lib.rs, third_party/remedy-lua); this file gives them
+ * are Rust (rust/src/lua.rs, third_party/remedy-lua); this file gives them
  * flat C functions for the console, windows, keys and the run state, and
  * provides lua_run() to the rest of the kernel. */
 #include <stdio.h>
@@ -18,7 +18,7 @@ typedef struct {
 } runctx;
 #define CTX ((runctx *)thread_data())
 
-/* rust/src/lib.rs */
+/* rust/src/lua.rs */
 int rl_run(const char *name, size_t name_len, const char *code, size_t len, size_t mem_limit, strbuf *err);
 
 /* Checks whether the run must stop; the result is sticky. */
