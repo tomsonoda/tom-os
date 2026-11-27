@@ -49,8 +49,14 @@ typedef struct term {
     u8 attr;
     int esc_state, esc_args[4], esc_n, esc_private;
     u64 dirty; /* one bit per row that needs redrawing (windows only; up to 64 rows) */
+    u32 *uc;   /* per cell: Unicode code point if not ASCII, TERM_CONT for the right half
+                  of a wide character, 0 otherwise (windows only) */
+    u32 utf_cp;
+    int utf_need; /* UTF-8 continuation bytes still expected */
     int hw;    /* backed by the VGA text screen */
 } term;
+
+#define TERM_CONT 0xFFFFFFFFu
 
 /* Where a thread's console I/O goes. */
 typedef struct tty {
@@ -89,6 +95,13 @@ void console_clear_break(void);
 /* Line editor; with `history`, the up/down arrows recall earlier lines.
  * Returns the length, or KEY_BREAK. */
 int console_readline(char *buf, size_t max, int history);
+/* Japanese input: typed letters become kana while it is on. Toggled by
+ * Alt+Space / Ctrl+Space / the kana and eisu keys, or the bytes 0x1D (toggle),
+ * 0x1E (on), 0x1F (off) from the serial line. */
+int ime_enabled(void);
+/* agent/agent.c: asks the LLM to convert hiragana to kanji. `avoid` (may be
+ * NULL) is a previous answer to replace with another one. */
+int agent_convert_kana(const char *kana, const char *avoid, strbuf *out, strbuf *err);
 
 /* ---- threads (kernel/sched.c): cooperative, round-robin ---- */
 typedef struct thread thread;
@@ -138,6 +151,13 @@ void gfx_circle(surface *s, int cx, int cy, int r, u32 c, int fill);
 void gfx_glyph(surface *s, int x, int y, u8 ch, u32 fg, long bg, int scale); /* bg < 0: transparent */
 void gfx_text(surface *s, int x, int y, const char *str, size_t n, u32 fg, long bg, int scale);
 void gfx_blit(surface *dst, int dx, int dy, const u32 *src, int sw, int sh);
+/* UTF-8: decodes one character, returns the bytes used (at least 1). */
+int utf8_decode(const char *s, size_t n, u32 *cp);
+/* Japanese font: 16x16 glyph (two bytes per row) or NULL if there is none. */
+const u8 *font_wide(u32 cp);
+/* Screen columns a character takes: 2 for full-width Japanese, else 1. */
+int font_cells(u32 cp);
+void gfx_glyph16(surface *s, int x, int y, const u8 *bits, u32 fg, long bg, int scale);
 void gfx_blit_resize(surface *dst, int dx, int dy, int dw, int dh, const u32 *src, int sw, int sh);
 
 /* ---- window manager (gui/wm.c) ---- */
@@ -178,6 +198,7 @@ void wm_mouse_abs(int x, int y, int buttons);        /* absolute pointer, 0..655
 enum { LAYOUT_FULL, LAYOUT_WINDOWS };
 void wm_set_layout(int layout);
 void wm_set_home(window *w); /* the shell: the home screen apps open on top of */
+void wm_ime_changed(void);   /* redraw the input-method indicator */
 int wm_layout(void);
 void wm_canvas_max(int *w, int *h); /* largest canvas an app can use */
 int wm_screen_w(void);
@@ -212,6 +233,7 @@ void tcp_input(u32 src, const u8 *seg, size_t len); /* net/tcp.c */
 #define NET_ERESET (-4)
 #define NET_ENONET (-5)
 #define NET_EPROTO (-6)
+#define NET_EBUSY (-7)
 /* Called about once per second while a TCP call is waiting (progress display). */
 extern void (*net_wait_hook)(void);
 int tcp_connect(u32 ip, u16 port, int timeout_ms);

@@ -39,8 +39,23 @@ static int dechunk(const char *p, size_t n, strbuf *out) {
 
 const char *http_phase = "connecting";
 
+static int http_post_json_locked(u32 ip, u16 port, const char *path, const char *body, size_t body_len,
+                                 strbuf *resp, int *status, int timeout_ms);
+
 int http_post_json(u32 ip, u16 port, const char *path, const char *body, size_t body_len,
                    strbuf *resp, int *status, int timeout_ms) {
+    int r;
+    /* one connection at a time: the TCP layer has a single socket */
+    static int busy;
+    if (busy) return NET_EBUSY;
+    busy = 1;
+    r = http_post_json_locked(ip, port, path, body, body_len, resp, status, timeout_ms);
+    busy = 0;
+    return r;
+}
+
+static int http_post_json_locked(u32 ip, u16 port, const char *path, const char *body, size_t body_len,
+                                 strbuf *resp, int *status, int timeout_ms) {
     char head[512], host[16];
     strbuf raw;
     int r;

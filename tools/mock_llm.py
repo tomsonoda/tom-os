@@ -39,9 +39,22 @@ def tool_call(call_id, name, args, content=None):
     }
 
 
+# Kana-to-kanji conversions the mock knows, first and second candidate.
+CONVERSIONS = {
+    "にほんご": ["日本語", "二本語"],
+    "ぶろっくくずしをつくって": ["ブロック崩しを作って", "ブロック崩しをつくって"],
+}
+
+
 def reply_for(req):
     """Returns (message, use_chunked_encoding)."""
     msgs = req["messages"]
+    if "kana-to-kanji" in msgs[0]["content"]:  # the input method's conversion request
+        assert "tools" not in req, "conversion requests carry no tools"
+        kana = msgs[-1]["content"]
+        cands = CONVERSIONS.get(kana, [kana])
+        second = "did not want" in msgs[0]["content"]
+        return {"role": "assistant", "content": cands[1 if second and len(cands) > 1 else 0]}, False
     last_user = max(i for i, m in enumerate(msgs) if m["role"] == "user")
     user_text = msgs[last_user]["content"]
     tool_results = [m for m in msgs[last_user + 1:] if m["role"] == "tool"]
@@ -86,7 +99,8 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(body)
             assert req["messages"][0]["role"] == "system", "first message must be system"
             assert req.get("model"), "model missing"
-            assert len(req["tools"]) == 6, "expected 6 tools"
+            assert len(req.get("tools", [])) == 6 or "kana-to-kanji" in req["messages"][0]["content"], \
+                "expected 6 tools"
             message, chunked = reply_for(req)
             status, payload = 200, {"id": "mock", "object": "chat.completion",
                                     "choices": [{"index": 0, "message": message,

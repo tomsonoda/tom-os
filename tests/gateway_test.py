@@ -142,6 +142,7 @@ def main():
             params = fake.calls[-1]
             assert params["tools"][0]["eager_input_streaming"] is True
             assert params["fallbacks"] == "default"
+            assert params["output_config"]["effort"] == "medium"
         step("a slow streamed reply with a tool call arrives (keep-alive, progress log)", slow)
 
         def cancel():
@@ -161,6 +162,22 @@ def main():
             vm.command("hello", "LLM error: the gateway could not reach the Claude API", PROMPT)
             fake.mode = "ok"
         step("Claude API errors are shown in tom-os", unreachable)
+
+        def conversion():
+            vm.command("/lua print(1)", PROMPT)
+            fake.calls.clear()
+            fake.mode = "ok"
+            # the input method's conversion request has no tools: low effort
+            import json, urllib.request
+            body = json.dumps({"model": "m", "messages": [
+                {"role": "system", "content": "You are the kana-to-kanji converter"},
+                {"role": "user", "content": "にほんご"}]}).encode()
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            opener.open(urllib.request.Request("http://127.0.0.1:%d/v1/chat/completions"
+                                               % server.server_address[1], data=body), timeout=30).read()
+            assert fake.calls[-1]["output_config"]["effort"] == "low"
+            assert "tools" not in fake.calls[-1]
+        step("requests without tools (kana conversion) use low effort", conversion)
 
         def halt():
             vm.send("/halt\n")

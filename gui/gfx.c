@@ -176,14 +176,72 @@ void gfx_glyph(surface *s, int x, int y, u8 ch, u32 fg, long bg, int scale) {
     }
 }
 
+int utf8_decode(const char *s, size_t n, u32 *cp) {
+    const u8 *p = (const u8 *)s;
+    u8 c = p[0];
+    int need = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : 0;
+    if (c < 0x80 || (c >= 0x80 && c < 0xC0) || (size_t)need >= n) {
+        *cp = c < 0x80 ? c : '?';
+        return 1;
+    }
+    u32 v = c & (0x3F >> need);
+    for (int i = 1; i <= need; i++) {
+        if ((p[i] & 0xC0) != 0x80) {
+            *cp = '?';
+            return i;
+        }
+        v = (v << 6) | (p[i] & 0x3F);
+    }
+    *cp = v;
+    return need + 1;
+}
+
+/* ---- Japanese font (gui/font_ja.bin, linked in by gui/font_data.asm) ---- */
+extern const u8 font_ja[];
+
+const u8 *font_wide(u32 cp) {
+    if (cp < 0x80 || cp > 0xFFFF || memcmp(font_ja, "TJF1", 4) != 0) return NULL;
+    u32 n;
+    memcpy(&n, font_ja + 4, 4);
+    const u8 *cps = font_ja + 8;
+    u32 lo = 0, hi = n;
+    while (lo < hi) {
+        u32 mid = (lo + hi) / 2;
+        u16 v = (u16)(cps[2 * mid] | (cps[2 * mid + 1] << 8));
+        if (v == cp) return font_ja + 8 + 2 * n + 32 * mid;
+        if (v < cp) lo = mid + 1;
+        else hi = mid;
+    }
+    return NULL;
+}
+
+int font_cells(u32 cp) { return font_wide(cp) ? 2 : 1; }
+
+void gfx_glyph16(surface *s, int x, int y, const u8 *bits, u32 fg, long bg, int scale) {
+    if (scale < 1) scale = 1;
+    if (x >= s->cx1 || y >= s->cy1 || x + 16 * scale <= s->cx0 || y + 16 * scale <= s->cy0) return;
+    for (int row = 0; row < 16; row++) {
+        u32 b = (u32)(bits[2 * row] << 8) | bits[2 * row + 1];
+        for (int col = 0; col < 16; col++, b <<= 1) {
+            if (b & 0x8000) gfx_fill(s, x + col * scale, y + row * scale, scale, scale, fg);
+            else if (bg >= 0) gfx_fill(s, x + col * scale, y + row * scale, scale, scale, (u32)bg);
+        }
+    }
+}
+
 void gfx_text(surface *s, int x, int y, const char *str, size_t n, u32 fg, long bg, int scale) {
     if (scale < 1) scale = 1;
-    for (size_t i = 0; i < n; i++) {
-        u8 c = (u8)str[i];
-        if (c >= 0x80 && c < 0xC0) continue; /* UTF-8 continuation */
-        if (c >= 0x80) c = '?';
-        gfx_glyph(s, x, y, c, fg, bg, scale);
-        x += 8 * scale;
+    for (size_t i = 0; i < n;) {
+        u32 cp;
+        i += (size_t)utf8_decode(str + i, n - i, &cp);
+        const u8 *g = font_wide(cp);
+        if (g) {
+            gfx_glyph16(s, x, y, g, fg, bg, scale);
+            x += 16 * scale;
+        } else {
+            gfx_glyph(s, x, y, cp < 0x80 ? (u8)cp : '?', fg, bg, scale);
+            x += 8 * scale;
+        }
     }
 }
 

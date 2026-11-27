@@ -407,15 +407,21 @@ static void render_term(window *w) {
         if (!(dirty & (1ULL << row))) continue;
         for (int col = 0; col < t->cols; col++) {
             u16 cell = t->cells[row * t->cols + col];
+            u32 uc = t->uc ? t->uc[row * t->cols + col] : 0;
             u8 attr = (u8)(cell >> 8);
-            gfx_glyph(&s, col * CELL_W, row * CELL_H, (u8)cell, palette[attr & 15],
-                      (long)palette[(attr >> 4) & 7], 1);
+            u32 fg = palette[attr & 15];
+            long bg = (long)palette[(attr >> 4) & 7];
+            const u8 *g = uc && uc != TERM_CONT ? font_wide(uc) : NULL;
+            if (g) gfx_glyph16(&s, col * CELL_W, row * CELL_H, g, fg, bg, 1);
+            else if (uc != TERM_CONT) gfx_glyph(&s, col * CELL_W, row * CELL_H, (u8)cell, fg, bg, 1);
         }
         if (show_cursor && row == t->cy)
             gfx_fill(&s, t->cx * CELL_W, row * CELL_H + CELL_H - 3, CELL_W, 2, 0xE0E0E0);
         damage_content(w, 0, row * CELL_H, w->w, CELL_H);
     }
 }
+
+static void draw_ime(int x, int y);
 
 static void text_at(int x, int y, const char *s, u32 color) {
     gfx_text(&shadow, x, y, s, strlen(s), color, -1, 1);
@@ -451,6 +457,7 @@ static void compose_windows(void) {
             "tom-os   Alt+Tab: next window   Alt+Q: close   Alt+arrows: move   /layout full: one app at a time",
             COL_HINT);
     for (int i = 0; i < nwin; i++) draw_window(zorder[i]);
+    draw_ime(shadow.w - 32, shadow.h - CELL_H - 6);
 }
 
 /* --------------------------------------------------- full-screen layout */
@@ -489,6 +496,20 @@ static void draw_status_bar(void) {
     u64 t = rtc_unix_time();
     snprintf(buf, sizeof buf, "%02d:%02d", (int)(t / 3600 % 24), (int)(t / 60 % 60));
     text_at(shadow.w - ARROW_W - 48, 4, buf, COL_BAR_DIM);
+    draw_ime(shadow.w - ARROW_W - 84, 3);
+}
+
+/* The input method indicator: あ when typing becomes kana, A otherwise. */
+static void draw_ime(int x, int y) {
+    int on = ime_enabled();
+    gfx_fill(&shadow, x, y, 24, 18, on ? COL_TITLE_ON : COL_BAR);
+    const char *label = on ? "あ" : "A";
+    gfx_text(&shadow, x + (on ? 4 : 8), y + 1, label, strlen(label), COL_TITLE_TEXT, -1, 1);
+}
+
+void wm_ime_changed(void) {
+    if (layout == LAYOUT_FULL) damage(0, 0, shadow.w, STATUS_H);
+    else damage(0, shadow.h - CELL_H - 8, shadow.w, CELL_H + 8);
 }
 
 static void draw_home_bar(void) {

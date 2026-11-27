@@ -28,8 +28,10 @@ static const char SYSTEM_PROMPT[] =
     "when graphics are available.\n"
     "  require('name') loads name.lua, apps/name.lua or lib/name.lua.\n"
     "- Text apps get an 80x25 character terminal. ANSI escape sequences work (colors, cursor "
-    "movement, clear screen). Only ASCII can be displayed on screen, so keep app text in "
-    "ASCII.\n"
+    "movement, clear screen). The screen shows ASCII and Japanese (kana, kanji, full-width "
+    "symbols: two columns each, 16x16 pixels in gfx.text); other characters appear as '?'. "
+    "Write app text in the user's language. The user can type Japanese into apps too "
+    "(io.read and tomos.readline get UTF-8).\n"
     "- Graphics (only when graphical mode is on, see the end of this message): every app runs "
     "on its own screen (or window); the user switches between apps.\n"
     "  gfx.mode([title]) turns the app's screen into a pixel canvas as large as possible; "
@@ -386,6 +388,79 @@ static void exec_tool(const toolcall *tc, strbuf *out) {
     }
 }
 
+/* ------------------------------------------------------ kana to kanji */
+static const char CONVERT_PROMPT[] =
+    "You are the kana-to-kanji converter of a Japanese input method. The user message is "
+    "Japanese typed in hiragana (it may also contain ASCII or katakana). Reply with exactly the "
+    "same words written the way a Japanese writer would: kanji, hiragana and katakana where "
+    "appropriate, like an IME conversion. Do not translate, answer, add, remove or explain "
+    "anything, and do not use quotes. Reply with the converted text only.";
+
+int agent_convert_kana(const char *kana, const char *avoid, strbuf *out, strbuf *err) {
+    char endpoint[64];
+    snprintf(endpoint, sizeof endpoint, "%s", agent_setting("llm"));
+    u32 ip;
+    u16 port = 80;
+    char *colon = strchr(endpoint, ':');
+    if (colon) {
+        *colon = 0;
+        port = (u16)atoi(colon + 1);
+    }
+    if (!net_up() || !net_parse_ip(endpoint, &ip)) {
+        sb_puts(err, "no LLM for conversion");
+        return -1;
+    }
+    strbuf req, resp, sys;
+    sb_init(&req);
+    sb_init(&resp);
+    sb_init(&sys);
+    sb_puts(&sys, CONVERT_PROMPT);
+    if (avoid) {
+        sb_puts(&sys, " The user did not want this conversion: ");
+        sb_puts(&sys, avoid);
+        sb_puts(&sys, " - reply with the next most likely different one.");
+    }
+    sb_putc(&req, '{');
+    put_field(&req, "model", agent_setting("model"));
+    sb_puts(&req, ",\"stream\":false,\"messages\":[{");
+    put_field(&req, "role", "system");
+    sb_putc(&req, ',');
+    put_field(&req, "content", sb_cstr(&sys));
+    sb_puts(&req, "},{");
+    put_field(&req, "role", "user");
+    sb_putc(&req, ',');
+    put_field(&req, "content", kana);
+    sb_puts(&req, "}]}");
+    sb_free(&sys);
+
+    int status = 0;
+    int r = http_post_json(ip, port, agent_setting("path"), sb_cstr(&req), req.len, &resp, &status, 60000);
+    sb_free(&req);
+    if (r < 0) {
+        sb_puts(err, net_strerror(r));
+        sb_free(&resp);
+        return -1;
+    }
+    jv *root = json_parse(sb_cstr(&resp), resp.len);
+    const char *text = json_str(json_get(json_get(json_at(json_get(root, "choices"), 0), "message"), "content"));
+    if (status != 200 || !text) {
+        sb_puts(err, "conversion failed");
+        r = -1;
+    } else {
+        /* one line, without surrounding blanks or quotes */
+        while (*text == ' ' || *text == '\n' || *text == '"' || !strncmp(text, "「", 3))
+            text += *text == ' ' || *text == '\n' || *text == '"' ? 1 : 3;
+        size_t len = strcspn(text, "\n");
+        while (len && (text[len - 1] == ' ' || text[len - 1] == '"')) len--;
+        if (len >= 3 && !strncmp(text + len - 3, "」", 3) && !strstr(kana, "「")) len -= 3;
+        sb_put(out, text, len);
+        r = 0;
+    }
+    json_free(root);
+    sb_free(&resp);
+    return r;
+}
+
 /* ------------------------------------------------------------------ turn */
 /* Status line while waiting for the model; writing a whole app can take a
  * minute or two, so show that time is passing. */
@@ -411,6 +486,7 @@ void agent_turn(const char *user_text) {
 
     for (int step = 0; step < MAX_STEPS; step++) {
         wait_start = time_ms();
+        http_phase = "connecting";
         show_waiting();
         net_wait_hook = show_waiting;
         strbuf errmsg;

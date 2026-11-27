@@ -130,7 +130,9 @@ def complete(req, progress):
         model=args.model,
         max_tokens=MAX_TOKENS,
         thinking={"type": "adaptive"},
-        output_config={"effort": args.effort},
+        # Requests without tools are short jobs such as tom-os's kana-to-kanji
+        # conversion, where a quick answer matters more than deep thinking.
+        output_config={"effort": args.effort if tools else "low"},
         system=system,
         messages=messages,
         # If a safety classifier declines, retry on the fallback model the API picks.

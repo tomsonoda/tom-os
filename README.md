@@ -24,7 +24,7 @@ First milestone. Runs on x86-64 under QEMU.
 |---|---|
 | Boot in QEMU and talk to the agent | Android devices / aarch64 |
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
-| Serial and VGA text consoles | Non-ASCII text on screen (only ASCII glyphs) |
+| Serial and VGA text consoles; Japanese text on screen and Japanese input (romaji, kanji conversion by the LLM) in graphical mode | Other non-ASCII scripts on screen; Japanese on the VGA text screen (text mode) |
 | Graphical desktop: a home screen with the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
 | Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
 | Several apps running at once | Process isolation between apps |
@@ -108,7 +108,22 @@ Graphical mode is used whenever a suitable display is found and `gui=0` is not g
 
 In both modes the terminal that started QEMU is connected to the shell over the serial port. Quit QEMU with `Ctrl-A` then `X`. `Ctrl-C` goes to tom-os and interrupts a running app or a pending LLM request.
 
-You can write to the agent in any language from that terminal. The screen itself (window or VGA text) can only display ASCII, and the keyboard in the QEMU window uses the US layout.
+You can write to the agent in any language from that terminal. In graphical mode the screen also shows Japanese, and you can type Japanese in the QEMU window with the built-in input method (below). The VGA text screen of text mode shows ASCII only. The keyboard in the QEMU window uses the US layout.
+
+### Japanese input
+
+The input method of your computer does not reach the QEMU window, so tom-os has its own. It works wherever a line is typed: the prompt, and apps that read text.
+
+| Key | |
+|---|---|
+| `Option+Space` (Mac) / `Alt+Space`, `Ctrl+Space` | Switch Japanese input on and off. The status bar shows `あ` or `A`. The 変換/無変換/ひらがな keys of a Japanese PC keyboard also work. |
+| letters | Romaji become hiragana as you type (`nihongo` → にほんご, `kka` → っか, `n'` / `nn` → ん). `-` `,` `.` `[` `]` become ー 、 。 「 」. |
+| `Space` | Convert to kanji. The LLM does the conversion (tom-os has no dictionary), so it takes a moment; press `Space` again for another candidate. |
+| `Enter` | Accept. Press `Enter` again to send the line. |
+| `Ctrl+K` | Katakana. |
+| `Backspace`, `Esc` | Back to the kana / delete. |
+
+Lines that start with `/` are commands and stay in plain letters. The LLM understands hiragana too, so converting is optional when you write to the agent. Typing in the terminal that started QEMU (with your computer's own input method) also works.
 
 The up and down arrow keys recall earlier lines at the `tom-os>` prompt.
 
@@ -219,7 +234,7 @@ qemu-system-x86_64 -m 256M -cdrom tomos.iso -boot d \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
 ```
 
-The ISO menu offers graphical mode (default) and text mode. The terminal is connected to the shell in both; use it for non-ASCII input and output.
+The ISO menu offers graphical mode (default) and text mode. The terminal is connected to the shell in both.
 
 ### UTM
 
@@ -260,6 +275,7 @@ python3 tools/claude_gateway.py
 4. One chat round trip with the LLM works
 5. "Make me a ... app" produces an app, and `/run <name>` starts it
 6. In graphical mode: "make a breakout game" opens a playable game full screen; clicks work where you click; clicking the bottom bar goes back to the prompt, and the card view brings the game back
+7. Japanese: `Option+Space` shows あ in the status bar; typing `nihongo` and `Space` turns into 日本語
 
 ## How it works
 
@@ -340,10 +356,12 @@ end
 2. Streaming display of LLM responses
 3. Local inference inside the kernel with a small model
 4. aarch64 support, on the way to Android devices
-5. Non-ASCII text on screen (a Unicode bitmap font), keyboard layouts other than US
+5. Other scripts on screen (a larger Unicode font), keyboard layouts other than US, a local kana-kanji dictionary
 6. Sound, images, and a richer widget set for apps
 7. App isolation (user mode, memory protection)
 
 ## License
 
 `third_party/lua` is under the MIT license of Lua.org, PUC-Rio (see `third_party/lua/README.md`).
+
+`gui/font_ja.bin` is converted by `tools/make_font.py` from the Shinonome (東雲) 16-dot gothic font (`shnmk16`, Debian package `xfonts-shinonome`), which its authors placed in the public domain.

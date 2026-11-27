@@ -195,6 +195,7 @@ const char *net_strerror(int e) {
     case NET_ERESET: return "connection reset";
     case NET_ENONET: return "no network device";
     case NET_EPROTO: return "protocol error";
+    case NET_EBUSY: return "the network is busy with another request";
     default: return "network error";
     }
 }

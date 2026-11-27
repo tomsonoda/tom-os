@@ -41,7 +41,7 @@ WARN   := -Wall -Wextra
 
 SRCS := $(wildcard kernel/*.c net/*.c lib/*.c fs/*.c agent/*.c lua/*.c gui/*.c)
 LUA_SRCS := $(wildcard third_party/lua/*.c)
-OBJS := $(BUILD)/arch/x86_64/boot.o \
+OBJS := $(BUILD)/arch/x86_64/boot.o $(BUILD)/gui/font_data.o \
         $(SRCS:%.c=$(BUILD)/%.o) $(LUA_SRCS:%.c=$(BUILD)/%.o)
 
 KERNEL := $(BUILD)/tomos.elf
@@ -79,6 +79,10 @@ $(BUILD)/arch/x86_64/boot.o: arch/x86_64/boot.asm
 	@mkdir -p $(dir $@)
 	$(AS) -f elf64 $< -o $@
 
+$(BUILD)/gui/font_data.o: gui/font_data.asm gui/font_ja.bin
+	@mkdir -p $(dir $@)
+	$(AS) -f elf64 $< -o $@
+
 $(BUILD)/third_party/lua/%.o: third_party/lua/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -w -c $< -o $@
@@ -105,6 +109,7 @@ test: $(KERNEL)
 	python3 tests/boot_test.py
 	python3 tests/gui_test.py
 	python3 tests/phone_test.py
+	python3 tests/ime_test.py
 	python3 tests/gateway_test.py
 
 # Bootable CD image (BIOS boot via GRUB). Needs grub-pc-bin, xorriso and mtools.
@@ -126,6 +131,7 @@ test-iso: $(ISO)
 	TOMOS_ISO=$(ISO) python3 tests/boot_test.py
 	TOMOS_ISO=$(ISO) python3 tests/gui_test.py
 	TOMOS_ISO=$(ISO) python3 tests/phone_test.py
+	TOMOS_ISO=$(ISO) python3 tests/ime_test.py
 
 clean:
 	rm -rf $(BUILD)
