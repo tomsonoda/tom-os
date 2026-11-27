@@ -125,6 +125,7 @@ void thread_exit(void) __attribute__((noreturn));
 void thread_kill(thread *t);          /* ask a thread to stop */
 int thread_killed(void);              /* has the calling thread been asked to stop? */
 tty *thread_tty(void);
+struct homeview *thread_home(void);    /* the calling thread's home view, or NULL */
 void thread_set_tty(tty *t);
 struct window *thread_window(void);
 void thread_set_window(struct window *w);
@@ -229,11 +230,10 @@ void wm_set_layout(int layout);
 void wm_set_home(window *w); /* the shell: the home screen apps open on top of */
 void wm_ime_changed(void);   /* redraw the input-method indicator */
 
-/* ---- home screen chat view (gui/home.c) ---- */
+/* ---- home screen chat view (rust/src/home.rs) ---- */
 homeview *home_create(tty *t);
 void home_feed(homeview *h, const char *s, size_t n);
 void home_add_user(homeview *h, const char *line);
-void home_add_user_line(const char *line); /* on the calling thread's home view, if any */
 /* The line being typed: text, cursor (byte offset), and the composition at the cursor. */
 void home_set_input(homeview *h, const char *line, size_t n, size_t cur, const char *comp, size_t cn,
                     int converted);

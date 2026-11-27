@@ -118,3 +118,8 @@ thread *thread_spawn(void (*fn)(void *), void *arg, tty *t) {
     }
     return NULL;
 }
+
+homeview *thread_home(void) {
+    tty *t = thread_tty();
+    return t ? t->home : NULL;
+}

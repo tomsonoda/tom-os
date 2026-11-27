@@ -66,7 +66,9 @@ unsafe extern "C" {
     pub fn wm_display_h() -> i32;
     pub fn wm_scale() -> i32;
     pub fn wm_set_display(w: i32, h: i32, scale: i32, err: *mut c_void) -> i32;
-    pub fn home_add_user_line(line: *const c_char);
+    pub fn thread_home() -> *mut c_void;
+    pub fn tty_input(tty: *mut c_void, bytes: *const c_char);
+    pub fn ime_enabled() -> i32;
     pub fn mouse_absolute() -> i32;
     pub fn mem_used() -> usize;
     pub fn mem_total() -> usize;

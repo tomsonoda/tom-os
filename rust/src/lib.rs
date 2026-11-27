@@ -11,6 +11,7 @@ mod agent;
 mod apps;
 mod fs;
 mod gfx;
+mod home;
 mod http;
 mod json;
 mod lua;

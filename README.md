@@ -14,7 +14,7 @@ Guess a number from 1 to 100: _
 
 tom-os does not use Linux or any other existing kernel. Boot code, console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in C and Rust with a NASM boot stub. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 1.9 MiB and boots instantly.
 
-The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, 2D drawing and fonts, and the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access). Still C: the window system and terminals, the other drivers, memory management and boot.
+The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, the home screen's chat view, 2D drawing and fonts, and the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access). Still C: the window manager and terminals, the other drivers, memory management and boot.
 
 The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but goes in a different direction. llm.asm is a chat REPL that runs model inference inside the kernel. tom-os starts with an agent that can use tools and a way to run the apps it creates.
 
@@ -334,7 +334,7 @@ python3 tools/claude_gateway.py
 +------------------------------------------------------------------+
 ```
 
-- The home screen's chat view (`gui/home.c`) reads the shell's ordinary output. Private escape sequences, which terminals ignore, mark what each piece of text is (an answer, a step, an error, the waiting indicator, or something to leave out), so the serial console and the windows layout still show the plain text.
+- The home screen's chat view (`rust/src/home.rs`) reads the shell's ordinary output. Private escape sequences, which terminals ignore, mark what each piece of text is (an answer, a step, an error, the waiting indicator, or something to leave out), so the serial console and the windows layout still show the plain text.
 - Single address space. Threads are cooperative: an app gives up the CPU whenever it waits for input, sleeps or shows a frame, and the Lua runtime also yields every few thousand instructions, so a busy app cannot freeze the others.
 - All devices are polled; interrupts are only used to wake the CPU from `HLT`, so the system does not spin while idle.
 - Graphics use the linear framebuffer of QEMU's standard display adapter (1024x768). The window manager keeps one buffer per window and redraws only the part of the screen that changed. The 8x16 font is read from the VGA adapter at boot.

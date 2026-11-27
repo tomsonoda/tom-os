@@ -2,11 +2,10 @@
 //! else goes to the agent.
 
 use alloc::vec;
-use core::ffi::c_char;
 
 use crate::apps::{self, Started};
 use crate::rt::{self, StrBuf, console, lossy, ui};
-use crate::{agent, fs, kprint, net, sys};
+use crate::{agent, fs, home, kprint, net, sys};
 
 const HELP: &str = "Type what you want in plain language; the agent answers or builds an app for it.
 Commands:
@@ -228,7 +227,7 @@ pub extern "C" fn shell_run() {
             continue;
         }
         let line = &buf[..n as usize];
-        unsafe { sys::home_add_user_line(buf.as_ptr() as *const c_char) };
+        home::add_user_line(line);
         if line[0] == b'/' {
             command(line);
         } else {
