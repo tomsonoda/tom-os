@@ -204,7 +204,7 @@ On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, 
 
 Graphical mode has two layouts. Switch with `/layout full` and `/layout windows`, or boot with `layout=windows`.
 
-**Full screen (default)**, like a phone. The home screen is the prompt, shown as a chat: your requests appear in bubbles on the right, the agent's answers on the left, and the steps it takes (writing a file, testing it, starting the app) as quiet notes in between. You type in the rounded box at the bottom; `Enter` or the round button sends. Before the first request, the home screen greets you with a few suggestions you can click. The mouse wheel or `PageUp` / `PageDown` scroll back through the conversation. Apps open on top of the home screen, one at a time, filling the screen.
+**Full screen (default)**, like a phone. The home screen is the prompt, shown as a chat: your requests appear in bubbles on the right, the agent's answers on the left, and the steps it takes (writing a file, testing it, starting the app) as quiet notes in between. You type in the rounded box at the bottom; `Enter` or the round button sends. Before the first request, the home screen shows a greeting. The mouse wheel or `PageUp` / `PageDown` scroll back through the conversation. Apps open on top of the home screen, one at a time, filling the screen.
 
 - Click the bar at the bottom of the screen, or drag it up, to go back to the home screen (`Alt+H`). Apps keep running.
 - In an app, drag the bottom bar sideways to switch to the app that was started before or after it. A short drag springs back. The `<` and `>` at the top and `Alt+Left` / `Alt+Right` do the same.
