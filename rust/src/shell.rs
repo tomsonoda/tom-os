@@ -1,11 +1,10 @@
 //! The top-level prompt: slash commands are handled locally, everything
 //! else goes to the agent.
 
-use alloc::vec;
 
 use crate::apps::{self, Started};
-use crate::rt::{self, StrBuf, console, lossy, ui};
-use crate::{agent, fs, home, kprint, net, sys, wm};
+use crate::rt::{self, console, lossy, ui};
+use crate::{agent, fs, home, kprint, net, run, sys, wm};
 
 const HELP: &str = "Type what you want in plain language; the agent answers or builds an app for it.
 Commands:
@@ -66,7 +65,7 @@ fn cmd_info() {
     if graphical() {
         let (w, h, scale) = wm::display();
         let layout = if full_screen() { "full screen" } else { "windows" };
-        let pointer = if unsafe { sys::mouse_absolute() } != 0 { "absolute" } else { "relative" };
+        let pointer = if crate::console::mouse_absolute() { "absolute" } else { "relative" };
         kprint!("display: graphical ({layout}), {w}x{h}, scale {scale}, {pointer} pointer\n");
     } else {
         kprint!("display: text\n");
@@ -181,10 +180,8 @@ fn command(line: &[u8]) {
             }
         }
         "/lua" => {
-            let mut err = StrBuf::new();
-            let r = unsafe { sys::lua_run(c"lua".as_ptr(), arg.as_ptr(), arg.len(), 1, 0, core::ptr::null_mut(), err.as_ptr()) };
-            if r != 0 {
-                error(&lossy(err.as_bytes()));
+            if let Err(e) = run::lua_run("lua", arg.as_bytes(), true, 0).0 {
+                error(&e);
             }
         }
         "/clear" => {
@@ -208,17 +205,13 @@ fn command(line: &[u8]) {
 }
 
 /// The shell's main loop; never returns.
-#[unsafe(no_mangle)]
-pub extern "C" fn shell_run() {
-    let mut buf = vec![0u8; 4096];
+pub fn run() -> ! {
     loop {
         kprint!("{}\x1b[1;32mtom-os>\x1b[0m ", ui::HIDE);
-        let n = unsafe { sys::console_readline(buf.as_mut_ptr(), buf.len(), 1) };
+        let line = crate::console::readline(4095, true);
         console(ui::END.as_bytes());
-        if n <= 0 {
-            continue;
-        }
-        let line = &buf[..n as usize];
+        let Some(line) = line.filter(|l| !l.is_empty()) else { continue };
+        let line = line.as_slice();
         home::add_user_line(line);
         if line[0] == b'/' {
             command(line);

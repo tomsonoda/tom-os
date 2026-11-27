@@ -6,7 +6,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::net::{self, NET, Net, NetError, PROTO_TCP, fold, get16, get32, idle, now, put16, put32, sum};
 use crate::rt::KCell;
-use crate::sys;
 
 const FIN: u8 = 0x01;
 const SYN: u8 = 0x02;
@@ -302,7 +301,7 @@ fn wait_tick() {
 }
 
 fn break_pending() -> bool {
-    unsafe { sys::console_break_pending() != 0 }
+    crate::console::break_pending()
 }
 
 // ------------------------------------------------------------ the socket

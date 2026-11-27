@@ -8,14 +8,12 @@
 //! shown as a note. The line being typed is shown in an input box at the
 //! bottom.
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_void};
 
 use crate::gfx::{Surface, font_wide, utf8_decode};
-use crate::rt::cstr;
-use crate::sys;
+use crate::rt::KCell;
+use crate::{console, sys};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -65,8 +63,6 @@ struct Chip {
 }
 
 pub struct HomeView {
-    /// the shell's tty: clicks type into it
-    tty: *mut c_void,
     entries: VecDeque<Entry>,
     /// the newest entry is still receiving text
     open: bool,
@@ -237,9 +233,8 @@ fn entry_block(mut s: Option<&mut Surface>, e: &Entry, col_x: i32, col_w: i32, y
 }
 
 impl HomeView {
-    fn new(tty: *mut c_void) -> HomeView {
+    const fn new() -> HomeView {
         HomeView {
-            tty,
             entries: VecDeque::new(),
             open: false,
             hidden: false,
@@ -345,7 +340,7 @@ impl HomeView {
         self.dirty = true;
     }
 
-    fn set_input(&mut self, line: &[u8], cursor: usize, comp: &[u8], converted: bool) {
+    pub fn set_input(&mut self, line: &[u8], cursor: usize, comp: &[u8], converted: bool) {
         let cursor = cursor.min(line.len());
         if self.input == line && self.comp == comp && self.converted == converted && self.cursor == cursor {
             return;
@@ -362,22 +357,14 @@ impl HomeView {
         self.dirty = true;
     }
 
-    fn type_text(&self, text: &[u8]) {
-        let t = cstr(text);
-        unsafe { sys::tty_input(self.tty, t.as_ptr() as *const c_char) };
-    }
-
-    pub fn click(&mut self, x: i32, y: i32) {
+    /// A click at (x, y) in the view; returns what it types, if anything.
+    pub fn click(&mut self, x: i32, y: i32) -> Option<Vec<u8>> {
         if let Some(c) = self.chips.iter().find(|c| x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
-            self.type_text(c.text.as_bytes());
-            self.type_text(b"\n");
-            return;
+            return Some([c.text.as_bytes(), b"\n"].concat());
         }
         let (sx, sy, r) = self.send;
         let (dx, dy) = (x - sx, y - sy);
-        if !self.input.is_empty() && dx * dx + dy * dy <= r * r {
-            self.type_text(b"\n");
-        }
+        (!self.input.is_empty() && dx * dx + dy * dy <= r * r).then(|| b"\n".to_vec())
     }
 
     fn draw_welcome(&mut self, s: &mut Surface, col_x: i32, col_w: i32, bottom: i32) {
@@ -457,7 +444,7 @@ impl HomeView {
         self.send = (sx, sy, r);
         s.circle(sx, sy, r, if self.input.is_empty() { C_SEND_OFF } else { C_ACCENT }, true);
         s.text(sx - 8, sy - 8, "↑".as_bytes(), WHITE, None, 1);
-        if unsafe { sys::ime_enabled() } != 0 {
+        if console::ime_enabled() {
             s.text(sx - r - 26, sy - 8, "あ".as_bytes(), C_ACCENT, None, 1);
         } else {
             s.text(sx - r - 22, sy - 8, b"A", C_MUTED, None, 1);
@@ -530,36 +517,29 @@ impl HomeView {
     }
 }
 
-// ------------------------------------------------------------ C interface
-// For the console and start-up code, which are still C. `h` is always
-// a pointer from `home_create`; views are never freed.
+// ---------------------------------------------------------- the one view
 
-#[unsafe(no_mangle)]
-pub extern "C" fn home_create(tty: *mut c_void) -> *mut HomeView {
-    Box::into_raw(Box::new(HomeView::new(tty)))
+/// The shell's chat view; None in text mode.
+static HOME: KCell<Option<HomeView>> = KCell::new(None);
+
+/// Creates the view (graphical mode).
+pub fn create() {
+    HOME.with(|h| *h = Some(HomeView::new()));
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_feed(h: *mut HomeView, s: *const u8, n: usize) {
-    unsafe { &mut *h }.feed(unsafe { core::slice::from_raw_parts(s, n) })
+/// Runs `f` on the view, if there is one.
+pub fn with<R>(f: impl FnOnce(&mut HomeView) -> R) -> Option<R> {
+    HOME.with(|h| h.as_mut().map(f))
 }
 
-/// The line being typed: text, cursor (byte offset), and the composition
-/// at the cursor.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn home_set_input(
-    h: *mut HomeView, line: *const u8, n: usize, cursor: usize, comp: *const u8, comp_len: usize, converted: i32,
-) {
-    let bytes = |p: *const u8, n: usize| if n == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(p, n) } };
-    unsafe { &mut *h }.set_input(bytes(line, n), cursor, bytes(comp, comp_len), converted != 0)
+/// Takes a piece of the shell's output.
+pub fn feed(bytes: &[u8]) {
+    with(|v| v.feed(bytes));
 }
 
-/// Shows a line the user sent, on the calling thread's home view if it has
-/// one.
+/// Shows a line the user sent, if the calling thread writes to the view.
 pub fn add_user_line(line: &[u8]) {
-    let h = unsafe { sys::thread_home() } as *mut HomeView;
-    if !h.is_null() {
-        // SAFETY: a view from home_create, used by one thread at a time
-        unsafe { &mut *h }.add_user(line);
+    if console::has_home(unsafe { sys::thread_tty() }) {
+        with(|v| v.add_user(line));
     }
 }

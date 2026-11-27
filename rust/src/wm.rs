@@ -17,12 +17,12 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 
+use crate::console::{self, TERM_CONT, TtyId};
 use crate::gfx::{self, Surface, font_wide};
-use crate::home::HomeView;
-use crate::rt::{KCell, from_c, lossy};
-use crate::sys;
+use crate::rt::{KCell, lossy};
+use crate::{home, sys};
 
 const MAX_WINDOWS: usize = 12;
 const CELL_W: i32 = 8;
@@ -103,50 +103,13 @@ const KEY_PGDN: i32 = 0xD1;
 /// Names a window; never 0, never reused.
 pub type Id = usize;
 
-// ------------------------------------------------- terminals (still C)
-
-/// `term` in kernel/tomos.h: a character-cell terminal owned by the
-/// console code, which is still C.
-#[repr(C)]
-struct Term {
-    cols: i32,
-    rows: i32,
-    cells: *mut u16,
-    cx: i32,
-    cy: i32,
-    attr: u8,
-    esc_state: i32,
-    esc_args: [i32; 4],
-    esc_n: i32,
-    esc_private: i32,
-    dirty: u64,
-    uc: *mut u32,
-    utf_cp: u32,
-    utf_need: i32,
-    hw: i32,
+fn redraw_term(tty: TtyId) {
+    console::with_term(tty, |t| t.dirty = !0);
 }
 
-/// The right half of a wide character (TERM_CONT in kernel/tomos.h).
-const TERM_CONT: u32 = 0xFFFF_FFFF;
-
-/// The terminal of a tty.
-fn term<'a>(tty: *mut c_void) -> Option<&'a mut Term> {
-    // SAFETY: ttys and their terminals come from the console code and
-    // outlive the windows that show them; nothing else runs while the
-    // window manager looks at one (cooperative threads, no yield in here)
-    unsafe { (sys::tty_term(tty) as *mut Term).as_mut() }
-}
-
-/// The chat view of a tty, if it has one.
-fn home_view<'a>(tty: *mut c_void) -> Option<&'a mut HomeView> {
-    // SAFETY: as for `term`; views are never freed
-    unsafe { (sys::tty_home(tty) as *mut HomeView).as_mut() }
-}
-
-fn redraw_term(tty: *mut c_void) {
-    if let Some(t) = term(tty) {
-        t.dirty = !0;
-    }
+/// Does this tty's output go to the home screen's chat view?
+fn has_view(tty: TtyId) -> bool {
+    console::has_home(tty)
 }
 
 // ----------------------------------------------------------------- state
@@ -165,7 +128,7 @@ struct Window {
     back: Vec<u32>,
     /// false: shows the tty's terminal, true: shows the canvas
     canvas: bool,
-    tty: *mut c_void,
+    tty: TtyId,
     /// the thread killed when the window is closed; null = not closable
     owner: *mut c_void,
     /// keys currently held (scancode, +0x80 for extended)
@@ -431,7 +394,7 @@ impl Wm {
     fn home_is_chat(&self, id: Id) -> bool {
         Some(id) == self.home
             && self.layout == LAYOUT_FULL
-            && self.win(id).is_some_and(|w| home_view(w.tty).is_some())
+            && self.win(id).is_some_and(|w| has_view(w.tty))
     }
 
     fn sliding(&self) -> bool {
@@ -555,14 +518,13 @@ impl Wm {
         }
     }
 
-    fn create(&mut self, title: &[u8], tty: *mut c_void, owner: *mut c_void) -> Option<Id> {
+    fn create(&mut self, title: &[u8], tty: TtyId, owner: *mut c_void) -> Option<Id> {
         if !self.active || self.windows.len() >= MAX_WINDOWS {
             return None;
         }
-        let t = term(tty)?;
-        let (w, h) = (t.cols * CELL_W, t.rows * CELL_H);
+        let (w, h) = console::with_term(tty, |t| (t.cols * CELL_W, t.rows * CELL_H))?;
         let front = alloc_pixels(w, h)?;
-        t.dirty = !0;
+        redraw_term(tty);
         let id = self.next_id;
         self.next_id += 1;
         let step = self.cascade % 8;
@@ -672,9 +634,9 @@ impl Wm {
     /// Back to showing the terminal.
     fn set_text(&mut self, id: Id) {
         let Some(tty) = self.win(id).map(|w| w.tty) else { return };
-        let Some(t) = term(tty) else { return };
-        if self.resize(id, t.cols * CELL_W, t.rows * CELL_H, false) {
-            t.dirty = !0;
+        let Some((cols, rows)) = console::with_term(tty, |t| (t.cols, t.rows)) else { return };
+        if self.resize(id, cols * CELL_W, rows * CELL_H, false) {
+            redraw_term(tty);
         }
     }
 
@@ -700,57 +662,63 @@ impl Wm {
     fn render_term(&mut self, id: Id) {
         let show_cursor = self.focused() == Some(id);
         let Some(w) = self.win_mut(id) else { return };
-        let Some(t) = term(w.tty) else { return };
-        let dirty = core::mem::take(&mut t.dirty);
-        if dirty == 0 || t.cols <= 0 || t.rows <= 0 || t.cells.is_null() {
-            return;
-        }
-        let (cols, rows) = (t.cols as usize, t.rows as usize);
-        // SAFETY: the console keeps cols * rows cells (and, if present, as
-        // many code points) for the terminal
-        let cells = unsafe { core::slice::from_raw_parts(t.cells, cols * rows) };
-        let wide = if t.uc.is_null() { None } else { Some(unsafe { core::slice::from_raw_parts(t.uc, cols * rows) }) };
-        let (cx, cy) = (t.cx, t.cy);
         let (ww, hh) = (w.w, w.h);
-        gfx::draw_on(&mut w.front, ww, hh, |s| {
-            for row in (0..rows.min(64)).filter(|row| dirty & (1 << row) != 0) {
-                let y = row as i32 * CELL_H;
-                for col in 0..cols {
-                    let cell = cells[row * cols + col];
-                    let uc = wide.map_or(0, |u| u[row * cols + col]);
-                    let attr = (cell >> 8) as u8;
-                    let fg = PALETTE[(attr & 15) as usize];
-                    let bg = Some(PALETTE[((attr >> 4) & 7) as usize]);
-                    let x = col as i32 * CELL_W;
-                    if uc == TERM_CONT {
-                        continue; // drawn with the left half
-                    }
-                    match font_wide(uc).filter(|_| uc != 0) {
-                        Some(g) => s.glyph16(x, y, g, fg, bg, 1),
-                        None => s.glyph(x, y, cell as u8, fg, bg, 1),
-                    }
-                }
-                if show_cursor && row as i32 == cy {
-                    s.fill(cx * CELL_W, y + CELL_H - 3, CELL_W, 2, 0xE0E0E0);
-                }
+        let front = &mut w.front;
+        let drawn = console::with_term(w.tty, |t| {
+            let dirty = core::mem::take(&mut t.dirty);
+            let (cols, rows) = (t.cols as usize, t.rows as usize);
+            if dirty == 0 || t.cells.len() < cols * rows {
+                return (0, 0);
             }
+            gfx::draw_on(front, ww, hh, |s| {
+                for row in (0..rows.min(64)).filter(|row| dirty & (1 << row) != 0) {
+                    let y = row as i32 * CELL_H;
+                    for col in 0..cols {
+                        let cell = t.cells[row * cols + col];
+                        let uc = t.wide.get(row * cols + col).copied().unwrap_or(0);
+                        if uc == TERM_CONT {
+                            continue; // drawn with the left half
+                        }
+                        let attr = (cell >> 8) as u8;
+                        let fg = PALETTE[(attr & 15) as usize];
+                        let bg = Some(PALETTE[((attr >> 4) & 7) as usize]);
+                        let x = col as i32 * CELL_W;
+                        match font_wide(uc).filter(|_| uc != 0) {
+                            Some(g) => s.glyph16(x, y, g, fg, bg, 1),
+                            None => s.glyph(x, y, cell as u8, fg, bg, 1),
+                        }
+                    }
+                    if show_cursor && row as i32 == t.cy {
+                        s.fill(t.cx * CELL_W, y + CELL_H - 3, CELL_W, 2, 0xE0E0E0);
+                    }
+                }
+            });
+            (dirty, rows)
         });
+        let Some((dirty, rows)) = drawn else { return };
         for row in (0..rows.min(64)).filter(|row| dirty & (1 << row) != 0) {
             self.damage_content(id, 0, row as i32 * CELL_H, ww, CELL_H);
         }
     }
 
     fn render_home(&mut self, id: Id) {
-        let Some(w) = self.win_mut(id) else { return };
-        let Some(view) = home_view(w.tty) else { return };
-        if !view.is_dirty() || now() - self.last_home_render < 30 {
+        if now() - self.last_home_render < 30 {
             return;
         }
         let Some(w) = self.win_mut(id) else { return };
         let (ww, hh) = (w.w, w.h);
-        gfx::draw_on(&mut w.front, ww, hh, |s| view.render(s));
-        self.last_home_render = now();
-        self.damage_content(id, 0, 0, ww, hh);
+        let front = &mut w.front;
+        let drawn = home::with(|view| {
+            let dirty = view.is_dirty();
+            if dirty {
+                gfx::draw_on(front, ww, hh, |s| view.render(s));
+            }
+            dirty
+        });
+        if drawn == Some(true) {
+            self.last_home_render = now();
+            self.damage_content(id, 0, 0, ww, hh);
+        }
     }
 
     // ------------------------------------------------- windows layout
@@ -844,7 +812,7 @@ impl Wm {
 
     /// The input method indicator: あ when typing becomes kana, A otherwise.
     fn draw_ime(&self, s: &mut Surface, x: i32, y: i32) {
-        let on = unsafe { sys::ime_enabled() } != 0;
+        let on = console::ime_enabled();
         let text_color = if self.layout == LAYOUT_FULL {
             s.round(x, y, 24, 18, 6, if on { COL_ACCENT } else { COL_BAR_LINE });
             if on { 0xFFFFFF } else { COL_BAR_TEXT }
@@ -860,9 +828,7 @@ impl Wm {
     }
 
     fn ime_changed(&mut self) {
-        if let Some(view) = self.home.and_then(|h| self.win(h)).and_then(|w| home_view(w.tty)) {
-            view.invalidate();
-        }
+        home::with(|view| view.invalidate());
         if self.layout == LAYOUT_FULL {
             self.damage(0, 0, self.sw, STATUS_H);
         } else {
@@ -1111,7 +1077,7 @@ impl Wm {
     /// The home screen's terminal fills the screen in full-screen layout.
     fn fit_home(&mut self) {
         let Some((id, tty, w, h)) = self.home.and_then(|h| self.win(h)).map(|w| (w.id, w.tty, w.w, w.h)) else { return };
-        let Some(t) = term(tty) else { return };
+        let Some(size) = console::with_term(tty, |t| (t.cols, t.rows)) else { return };
         let full = self.layout == LAYOUT_FULL;
         let (cols, rows) = if full {
             (self.sw / CELL_W, self.area_h() / CELL_H)
@@ -1119,20 +1085,18 @@ impl Wm {
             ((80 + (self.sw - 1024) / 16).max(80), (30 + (self.sh - 768) / 32).max(30))
         };
         let (cols, rows) = (cols.min(200), rows.min(64));
-        let chat = full && home_view(tty).is_some();
+        let chat = full && has_view(tty);
         let (want_w, want_h) = if chat { (self.sw, self.area_h()) } else { (cols * CELL_W, rows * CELL_H) };
-        if (cols, rows, w, h) == (t.cols, t.rows, want_w, want_h) {
+        if (cols, rows, w, h) == (size.0, size.1, want_w, want_h) {
             return;
         }
-        unsafe { sys::term_resize(t as *mut Term as *mut c_void, cols, rows) };
+        console::term_resize(tty, cols, rows);
         if chat {
             self.resize(id, want_w, want_h, false);
         } else {
             self.set_text(id);
         }
-        if let Some(view) = home_view(tty) {
-            view.invalidate();
-        }
+        home::with(|view| view.invalidate());
     }
 
     fn set_layout(&mut self, layout: i32) {
@@ -1165,7 +1129,7 @@ impl Wm {
 
     // ------------------------------------------------------------ input
 
-    fn key(&mut self, code: i32, down: bool, alt: bool, chars: *const c_char) {
+    fn key(&mut self, code: i32, down: bool, alt: bool, chars: Option<&[u8]>) {
         let Some(f) = self.focused() else { return };
         let owner = |wm: &Wm, id: Option<Id>| id.and_then(|id| wm.win(id)).map_or(core::ptr::null_mut(), |w| w.owner);
         if self.layout == LAYOUT_FULL && self.overview {
@@ -1190,9 +1154,7 @@ impl Wm {
             return;
         }
         if down && self.home_is_chat(f) && (code == KEY_PGUP || code == KEY_PGDN) {
-            if let Some(view) = self.win(f).and_then(|w| home_view(w.tty)) {
-                view.scroll_by(if code == KEY_PGUP { 300 } else { -300 });
-            }
+            home::with(|view| view.scroll_by(if code == KEY_PGUP { 300 } else { -300 }));
             return;
         }
         if alt && down && self.layout == LAYOUT_FULL {
@@ -1240,11 +1202,11 @@ impl Wm {
         self.key_to_app(f, code, down, alt, chars);
     }
 
-    fn key_to_app(&mut self, id: Id, code: i32, down: bool, alt: bool, chars: *const c_char) {
+    fn key_to_app(&mut self, id: Id, code: i32, down: bool, alt: bool, chars: Option<&[u8]>) {
         let Some(w) = self.win_mut(id) else { return };
         w.keys[(code & 0xFF) as usize] = down;
-        if down && !chars.is_null() && !alt {
-            unsafe { sys::tty_input(w.tty, chars) };
+        if let Some(chars) = chars.filter(|_| down && !alt) {
+            console::tty_input(w.tty, chars);
         }
     }
 
@@ -1408,10 +1370,10 @@ impl Wm {
             return;
         }
         let in_area = my >= self.area_y() && my < self.area_y() + self.area_h();
-        if let Some(f) = f.filter(|&f| self.home_is_chat(f)) {
+        if let Some(tty) = f.filter(|&f| self.home_is_chat(f)).and_then(|f| self.win(f)).map(|w| w.tty) {
             if click && in_area {
-                if let Some(view) = self.win(f).and_then(|w| home_view(w.tty)) {
-                    view.click(mx, my - self.area_y());
+                if let Some(typed) = home::with(|view| view.click(mx, my - self.area_y())).flatten() {
+                    console::tty_input(tty, &typed);
                 }
             }
         } else if in_area {
@@ -1523,7 +1485,7 @@ pub fn set_display(w: i32, h: i32, scale: i32) -> Result<(), String> {
 
 /// A window showing the terminal of `tty`. `owner` is the thread that is
 /// stopped when the window is closed (null: the window cannot be closed).
-pub fn create(title: &[u8], tty: *mut c_void, owner: *mut c_void) -> Option<Id> {
+pub fn create(title: &[u8], tty: TtyId, owner: *mut c_void) -> Option<Id> {
     WM.with(|wm| wm.create(title, tty, owner))
 }
 
@@ -1613,7 +1575,7 @@ pub fn app_flip(fps: f64) -> Result<bool, GfxError> {
     })?;
     let last_flip = || WM.with(|wm| wm.win(id).map_or(0, |w| w.last_flip));
     loop {
-        if unsafe { sys::host_abort() } != 0 {
+        if crate::run::stopped().is_some() {
             return Ok(true);
         }
         unsafe { sys::cpu_idle() };
@@ -1669,9 +1631,60 @@ pub fn app_size() -> Result<(i32, i32), GfxError> {
     WM.with(|wm| app_window(wm).map(|w| (w.w, w.h)))
 }
 
+// ------------------------------------------------- start-up and input
+
+/// Starts graphics; false if they are not available in this mode.
+pub fn init(w: i32, h: i32, scale: i32) -> bool {
+    let ok = WM.with(|wm| {
+        let ok = wm.set_mode(w, h, scale).is_ok();
+        (wm.mouse_x, wm.mouse_y) = (wm.sw / 2, wm.sh / 2);
+        ok
+    });
+    if ok {
+        console::mouse_init();
+        WM.with(|wm| {
+            wm.active = true;
+            wm.damage_all();
+        });
+    }
+    ok
+}
+
+/// The shell's window: the home screen apps open on top of.
+pub fn set_home(id: Id) {
+    WM.with(|wm| {
+        wm.home = wm.win(id).map(|w| w.id);
+        wm.fit_home();
+    })
+}
+
+/// A key went down or up; `chars` is what it types.
+pub fn key(code: i32, down: bool, alt: bool, chars: Option<&[u8]>) {
+    WM.with(|wm| wm.key(code, down, alt, chars))
+}
+
+/// Relative pointer movement (PS/2 mouse).
+pub fn mouse(dx: i32, dy: i32, buttons: i32) {
+    WM.with(|wm| wm.pointer(wm.mouse_x.saturating_add(dx), wm.mouse_y.saturating_add(dy), buttons))
+}
+
+/// Absolute pointer position, 0..65535 on both axes, and the wheel.
+pub fn mouse_abs(x: i32, y: i32, buttons: i32, wheel: i32) {
+    WM.with(|wm| {
+        wm.pointer((x as i64 * wm.sw as i64 / 65536) as i32, (y as i64 * wm.sh as i64 / 65536) as i32, buttons);
+        if wheel != 0 && !wm.overview && wm.focused().is_some_and(|f| wm.home_is_chat(f)) {
+            home::with(|view| view.scroll_by(-wheel * 60));
+        }
+    })
+}
+
+/// The input method was switched: redraw its indicator.
+pub fn ime_changed() {
+    WM.with(Wm::ime_changed)
+}
+
 // ------------------------------------------------------------ C interface
-// For the console, the scheduler and start-up code, which are still C.
-// Windows are passed as their id in a pointer-sized value.
+// For the scheduler, which is still C.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wm_active() -> i32 {
@@ -1679,86 +1692,6 @@ pub extern "C" fn wm_active() -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn wm_default_scale(w: i32, h: i32) -> i32 {
-    default_scale(w, h)
-}
-
-/// Starts graphics: 0 if they are available.
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_init(w: i32, h: i32, scale: i32) -> i32 {
-    let ok = WM.with(|wm| {
-        if wm.set_mode(w, h, scale).is_err() {
-            return false;
-        }
-        (wm.mouse_x, wm.mouse_y) = (wm.sw / 2, wm.sh / 2);
-        true
-    });
-    if !ok {
-        return -1;
-    }
-    unsafe { sys::mouse_init() };
-    WM.with(|wm| {
-        wm.active = true;
-        wm.damage_all();
-    });
-    0
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn wm_tick() {
     WM.try_with(Wm::tick);
-}
-
-/// # Safety
-/// `title` must be a NUL-terminated string and `tty` a tty of the console.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wm_create(title: *const c_char, tty: *mut c_void, owner: *mut c_void) -> Id {
-    create(unsafe { from_c(title) }, tty, owner).unwrap_or(0)
-}
-
-/// The shell's window: the home screen apps open on top of.
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_set_home(id: Id) {
-    WM.with(|wm| {
-        wm.home = wm.win(id).map(|w| w.id);
-        wm.fit_home();
-    })
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_set_layout(layout: i32) {
-    set_layout(layout)
-}
-
-/// A key went down or up; `chars` (may be NULL) is what it types.
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_key(code: i32, down: i32, alt: i32, chars: *const c_char) {
-    WM.with(|wm| wm.key(code, down != 0, alt != 0, chars))
-}
-
-/// Relative pointer movement (PS/2 mouse).
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_mouse(dx: i32, dy: i32, buttons: i32) {
-    WM.with(|wm| wm.pointer(wm.mouse_x.saturating_add(dx), wm.mouse_y.saturating_add(dy), buttons))
-}
-
-/// Absolute pointer position, 0..65535 on both axes, and the wheel.
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_mouse_abs(x: i32, y: i32, buttons: i32, wheel: i32) {
-    WM.with(|wm| {
-        wm.pointer((x as i64 * wm.sw as i64 / 65536) as i32, (y as i64 * wm.sh as i64 / 65536) as i32, buttons);
-        if wheel != 0 && !wm.overview {
-            if let Some(f) = wm.focused().filter(|&f| wm.home_is_chat(f)) {
-                if let Some(view) = wm.win(f).and_then(|w| home_view(w.tty)) {
-                    view.scroll_by(-wheel * 60);
-                }
-            }
-        }
-    })
-}
-
-/// The input method was switched: redraw its indicator.
-#[unsafe(no_mangle)]
-pub extern "C" fn wm_ime_changed() {
-    WM.with(Wm::ime_changed)
 }

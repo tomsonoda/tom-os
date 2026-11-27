@@ -16,7 +16,7 @@ struct thread {
     int state;
     int idle; /* last gave up the CPU because it was waiting */
     int kill;
-    tty *tty;
+    size_t tty; /* names the thread's console (rust/src/console.rs) */
     size_t win;
     void *data;
     void (*fn)(void *);
@@ -28,8 +28,8 @@ void ctx_switch(u64 *save_rsp, u64 new_rsp);
 static thread threads[MAX_THREADS] = {{.state = T_RUN}}; /* slot 0: the boot thread */
 static thread *cur = &threads[0];
 
-tty *thread_tty(void) { return cur->tty; }
-void thread_set_tty(tty *t) { cur->tty = t; }
+size_t thread_tty(void) { return cur->tty; }
+void thread_set_tty(size_t t) { cur->tty = t; }
 size_t thread_window(void) { return cur->win; }
 void thread_set_window(size_t w) { cur->win = w; }
 void *thread_data(void) { return cur->data; }
@@ -95,7 +95,7 @@ static void thread_entry(void) {
     thread_exit();
 }
 
-thread *thread_spawn(void (*fn)(void *), void *arg, tty *t) {
+thread *thread_spawn(void (*fn)(void *), void *arg, size_t t) {
     for (int i = 1; i < MAX_THREADS; i++) {
         thread *th = &threads[i];
         if (th->state != T_FREE) continue;
@@ -117,9 +117,4 @@ thread *thread_spawn(void (*fn)(void *), void *arg, tty *t) {
         return th;
     }
     return NULL;
-}
-
-homeview *thread_home(void) {
-    tty *t = thread_tty();
-    return t ? t->home : NULL;
 }

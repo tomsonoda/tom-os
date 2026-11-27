@@ -11,12 +11,13 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_void};
+use core::ffi::c_char;
 use core::time::Duration;
 
 use remedy_lua::{Error, Interrupt, IoError, Libs, LimitKind, Limits, Lua, ModuleSource, Stream, Value};
 
 use crate::fs;
+use crate::run::{self, Key, Line};
 use crate::gfx::Surface;
 use crate::wm::{self, GfxError};
 use crate::rt::{console, cstr};
@@ -137,17 +138,14 @@ struct ConsoleIn {
 impl Stream for ConsoleIn {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoError> {
         if self.pos >= self.line.len() {
-            let mut tmp = [0u8; 1024];
-            let n = unsafe { sys::host_readline(tmp.as_mut_ptr(), tmp.len()) };
-            if n == -2 {
-                self.intr.interrupt();
-                return Ok(0);
+            match run::readline() {
+                Line::Text(text) => self.line = text,
+                Line::EndOfInput => return Ok(0),
+                Line::Stopped => {
+                    self.intr.interrupt();
+                    return Ok(0);
+                }
             }
-            if n < 0 {
-                return Ok(0); // no keyboard: end of input
-            }
-            self.line.clear();
-            self.line.extend_from_slice(&tmp[..n as usize]);
             self.line.push(b'\n');
             self.pos = 0;
         }
@@ -301,7 +299,7 @@ fn register_tomos(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     let i = intr.clone();
     lua.register("tomos.sleep", move |lua, a| {
         let ms = num(lua, a, 0)?;
-        if unsafe { sys::host_sleep(ms) } != 0 {
+        if run::sleep(ms) {
             return stop(&i);
         }
         Ok(vec![])
@@ -309,12 +307,10 @@ fn register_tomos(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     let i = intr.clone();
     lua.register("tomos.getkey", move |lua, a| {
         let timeout = if is_given(a, 0) { int(lua, a, 0)?.max(0) } else { -1 };
-        let mut out = [0u8; 16];
-        let n = unsafe { sys::host_getkey(timeout, out.as_mut_ptr()) };
-        match n {
-            -1 => stop(&i),
-            0 => Ok(vec![Value::Nil]),
-            n => Ok(vec![lua.create_string(&out[..n as usize])?]),
+        match run::getkey(timeout) {
+            Key::Stopped => stop(&i),
+            Key::None => Ok(vec![Value::Nil]),
+            Key::Pressed(key) => Ok(vec![lua.create_string(key)?]),
         }
     })?;
     let i = intr.clone();
@@ -322,12 +318,10 @@ fn register_tomos(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
         if is_given(a, 0) {
             console(&bytes(lua, a, 0)?);
         }
-        let mut tmp = [0u8; 1024];
-        let n = unsafe { sys::host_readline(tmp.as_mut_ptr(), tmp.len()) };
-        match n {
-            -2 => stop(&i),
-            n if n < 0 => Ok(vec![Value::Nil]),
-            n => Ok(vec![lua.create_string(&tmp[..n as usize])?]),
+        match run::readline() {
+            Line::Stopped => stop(&i),
+            Line::EndOfInput => Ok(vec![Value::Nil]),
+            Line::Text(text) => Ok(vec![lua.create_string(text)?]),
         }
     })?;
     lua.register("tomos.time_ms", |_, _| Ok(vec![Value::Int(unsafe { sys::time_ms() } as i64)]))?;
@@ -352,7 +346,7 @@ fn register_tomos(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
 fn register_os(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     let i = intr.clone();
     lua.register("os.exit", move |_, _| {
-        unsafe { sys::host_exit() };
+        run::exit();
         stop(&i)
     })?;
     lua.register("os.remove", |lua, a| {
@@ -494,7 +488,7 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
     lua.register("sound.tone", |lua, a| {
         let (freq, ms) = (num(lua, a, 0)?, int(lua, a, 1)?);
         let (wave, vol, delay) = sound_opts(lua, a, 2)?;
-        let ok = unsafe { sys::sound_tone(freq, ms, vol, wave, delay, sys::host_owner()) } == 0;
+        let ok = unsafe { sys::sound_tone(freq, ms, vol, wave, delay, run::owner()) } == 0;
         Ok(vec![Value::Bool(ok)])
     })?;
     lua.register("sound.note", |lua, a| {
@@ -504,7 +498,7 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
         let mut spec = name;
         spec.extend_from_slice(format!(":{ms}").as_bytes());
         let c = cstr(&spec);
-        unsafe { sys::sound_melody(c.as_ptr() as *const c_char, ms, vol, wave, sys::host_owner()) };
+        unsafe { sys::sound_melody(c.as_ptr() as *const c_char, ms, vol, wave, run::owner()) };
         Ok(vec![])
     })?;
     lua.register("sound.melody", |lua, a| {
@@ -520,7 +514,7 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
             len = opt_int(lua, a, 1, 200)?;
             sound_opts(lua, a, 2)?
         };
-        let total = unsafe { sys::sound_melody(notes.as_ptr() as *const c_char, len, vol, wave, sys::host_owner()) };
+        let total = unsafe { sys::sound_melody(notes.as_ptr() as *const c_char, len, vol, wave, run::owner()) };
         Ok(vec![Value::Int(total as i64)])
     })?;
     lua.register("sound.play", |lua, a| {
@@ -535,21 +529,21 @@ fn register_sound(lua: &mut Lua, intr: &Interrupt) -> Result<(), Error> {
         for i in 1..=n {
             samples.push(lua.table_get(*t, Value::Int(i as i64)).as_num().unwrap_or(0.0) as f32);
         }
-        let ok = unsafe { sys::sound_pcm(samples.as_ptr(), n, rate, vol, 0, sys::host_owner()) } == 0;
+        let ok = unsafe { sys::sound_pcm(samples.as_ptr(), n, rate, vol, 0, run::owner()) } == 0;
         Ok(vec![Value::Bool(ok)])
     })?;
     lua.register("sound.beep", |_, _| {
-        unsafe { sys::sound_tone(880.0, 90, 0.4, 0, 0, sys::host_owner()) };
+        unsafe { sys::sound_tone(880.0, 90, 0.4, 0, 0, run::owner()) };
         Ok(vec![])
     })?;
     lua.register("sound.stop", |_, _| {
-        unsafe { sys::sound_stop(sys::host_owner()) };
+        unsafe { sys::sound_stop(run::owner()) };
         Ok(vec![])
     })?;
-    lua.register("sound.playing", |_, _| Ok(vec![Value::Bool(unsafe { sys::sound_busy(sys::host_owner()) } != 0)]))?;
+    lua.register("sound.playing", |_, _| Ok(vec![Value::Bool(unsafe { sys::sound_busy(run::owner()) } != 0)]))?;
     let i = intr.clone();
     lua.register("sound.wait", move |_, _| {
-        if unsafe { sys::host_sound_wait() } != 0 {
+        if run::sound_wait() {
             return stop(&i);
         }
         Ok(vec![])
@@ -565,7 +559,7 @@ fn setup(lua: &mut Lua) -> Result<(), Error> {
     // time limit.
     let i = intr.clone();
     let clock: remedy_lua::Clock = Arc::new(move || {
-        if unsafe { sys::host_poll() } != 0 {
+        if run::poll() {
             i.interrupt();
         }
         Duration::from_millis(unsafe { sys::time_ms() })
@@ -600,25 +594,13 @@ fn describe(e: &Error) -> String {
     }
 }
 
-/// Runs a Lua chunk in a fresh state. Returns 0, or -1 with the message
-/// appended to `err` (a kernel `strbuf`).
-///
-/// # Safety
-/// `name` and `code` must point to `name_len` and `len` readable bytes, and
-/// `err` to a valid strbuf.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn rl_run(name: *const u8, name_len: usize, code: *const u8, len: usize, mem_limit: usize, err: *mut c_void) -> i32 {
-    let name = String::from_utf8_lossy(unsafe { core::slice::from_raw_parts(name, name_len) });
-    let code = unsafe { core::slice::from_raw_parts(code, len) };
+/// Runs a program in a fresh Lua state that may use up to `mem_limit`
+/// bytes; an error comes back as its message with a traceback.
+pub fn exec(name: &str, code: &[u8], mem_limit: usize) -> Result<(), String> {
     let limits = Limits::unmetered().memory(mem_limit).native_depth(200).stack_bytes(400 << 10);
     let mut lua = Lua::new(limits, Libs::ALL | Libs::IO | Libs::REQUIRE | Libs::DEBUG_INFO);
-    let result = setup(&mut lua).and_then(|()| lua.exec(code, &format!("@{name}")));
-    match result {
-        Ok(_) => 0,
-        Err(e) => {
-            let msg = describe(&e);
-            unsafe { sys::sb_put(err, msg.as_ptr(), msg.len()) };
-            -1
-        }
+    match setup(&mut lua).and_then(|()| lua.exec(code, &format!("@{name}"))) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(describe(&e)),
     }
 }

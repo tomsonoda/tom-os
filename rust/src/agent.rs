@@ -4,13 +4,13 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_void};
+use core::ffi::c_char;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::json::{self, Json};
-use crate::rt::{self, KCell, StrBuf, console, cstr, lossy, ui};
+use crate::rt::{KCell, console, cstr, lossy, ui};
 use crate::apps::{self, Started};
-use crate::{fs, http, kprint, net, sys, tcp, wm};
+use crate::{fs, http, kprint, net, run, sys, tcp, wm};
 
 const MAX_STEPS: usize = 24;
 const TOOL_RESULT_MAX: usize = 12000;
@@ -251,16 +251,14 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
             None => b"error: 'code' is required".to_vec(),
             Some(code) => {
                 kprint!("{}  [run_lua] {} bytes ... ", ui::NOTE, code.len());
-                let (mut out, mut err) = (StrBuf::new(), StrBuf::new());
-                let r = unsafe { sys::lua_run(c"run_lua".as_ptr(), code.as_ptr(), code.len(), 0, 10_000, out.as_ptr(), err.as_ptr()) };
-                kprint!("{}\n{}", if r == 0 { "ok" } else { "error" }, ui::END);
-                let mut text = out.as_bytes().to_vec();
-                if r != 0 {
+                let (result, mut text) = run::lua_run("run_lua", code, false, 10_000);
+                kprint!("{}\n{}", if result.is_ok() { "ok" } else { "error" }, ui::END);
+                if let Err(e) = result {
                     if !text.is_empty() {
                         text.push(b'\n');
                     }
                     text.extend_from_slice(b"error: ");
-                    text.extend_from_slice(err.as_bytes());
+                    text.extend_from_slice(e.as_bytes());
                 } else if text.is_empty() {
                     text.extend_from_slice(b"(finished with no output)");
                 }
@@ -296,7 +294,9 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
 
 // ---------------------------------------------------------- kana to kanji
 
-fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String> {
+/// Asks the LLM to turn kana into kanji; `avoid` is a previous answer to
+/// replace with another one.
+pub fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String> {
     if !net::up() {
         return Err(String::from("no LLM for conversion"));
     }
@@ -355,28 +355,6 @@ fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String> {
     Ok(t.to_vec())
 }
 
-/// Asks the LLM to turn kana into kanji; `avoid` is a previous answer to
-/// replace. Appends the result to `out`, or the reason to `err`.
-///
-/// # Safety
-/// `kana` must be a NUL-terminated string, `avoid` one or NULL, and `out`
-/// and `err` valid strbufs.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn agent_convert_kana(kana: *const c_char, avoid: *const c_char, out: *mut c_void, err: *mut c_void) -> i32 {
-    let kana = unsafe { rt::from_c(kana) };
-    let avoid = if avoid.is_null() { None } else { Some(unsafe { rt::from_c(avoid) }) };
-    match convert_kana(kana, avoid) {
-        Ok(text) => {
-            unsafe { rt::sb_append(out, &text) };
-            0
-        }
-        Err(e) => {
-            unsafe { rt::sb_append(err, e.as_bytes()) };
-            -1
-        }
-    }
-}
-
 // ------------------------------------------------------------------ turn
 
 static WAIT_START: AtomicU64 = AtomicU64::new(0);
@@ -396,7 +374,7 @@ fn show_waiting() {
 fn run_turn(conv: &mut Vec<Message>, user_text: &[u8]) {
     let mark = conv.len();
     conv.push(Message { role: "user", content: Some(user_text.to_vec()), calls: Vec::new(), tool_call_id: None });
-    unsafe { sys::console_clear_break() };
+    crate::console::clear_break();
 
     for _ in 0..MAX_STEPS {
         WAIT_START.store(unsafe { sys::time_ms() }, Ordering::Relaxed);

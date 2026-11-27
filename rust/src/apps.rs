@@ -7,10 +7,11 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 
-use crate::rt::{KCell, StrBuf, console, cstr, lossy};
-use crate::{fs, kprint, sys, wm};
+use crate::console::{self, TtyId};
+use crate::rt::{KCell, lossy};
+use crate::{fs, kprint, run, sys, wm};
 
 const MAX_APPS: usize = 10;
 
@@ -25,9 +26,9 @@ struct Outcome {
 /// What the app's thread owns.
 struct App {
     id: i32,
-    path: Vec<u8>, // NUL-terminated
+    path: Vec<u8>,
     code: Vec<u8>, // private copy: the app may rewrite its own file
-    tty: *mut c_void,
+    tty: TtyId,
     window: wm::Id,
     outcome: Rc<Outcome>,
 }
@@ -58,19 +59,15 @@ fn resolve(name: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
 }
 
 /// Runs a program on the calling thread, with the keyboard.
-fn run(path: &[u8], code: &[u8]) -> Result<(), String> {
-    let mut err = StrBuf::new();
-    let r = unsafe {
-        sys::lua_run(path.as_ptr() as *const c_char, code.as_ptr(), code.len(), 1, 0, core::ptr::null_mut(), err.as_ptr())
-    };
-    if r == 0 { Ok(()) } else { Err(lossy(err.as_bytes())) }
+fn run_app(path: &[u8], code: &[u8]) -> Result<(), String> {
+    run::lua_run(&lossy(path), code, true, 0).0
 }
 
 extern "C" fn app_main(arg: *mut c_void) {
     // SAFETY: `arg` is the Box that launch_windowed handed to this thread
     let app = unsafe { Box::from_raw(arg as *mut App) };
     unsafe { sys::thread_set_window(app.window) }; // the scheduler keeps the id for the Lua gfx library
-    let result = run(&app.path, &app.code);
+    let result = run_app(&app.path, &app.code);
     app.outcome.failed.set(result.is_err());
     if let Err(e) = &result {
         *app.outcome.error.borrow_mut() = e.clone();
@@ -89,14 +86,12 @@ extern "C" fn app_main(arg: *mut c_void) {
             }
             let how = if result.is_err() { "stopped" } else { "finished" };
             kprint!("\x1b[0m\n[{how} - press a key to close this window]");
-            unsafe {
-                sys::console_clear_break();
-                sys::console_getc(-1);
-            }
+            console::clear_break();
+            console::getc(-1);
         }
     }
     wm::destroy(app.window);
-    unsafe { sys::tty_destroy(app.tty) };
+    console::tty_destroy(app.tty);
     RUNNING.with(|r| r.retain(|a| a.id != app.id));
 }
 
@@ -105,13 +100,9 @@ fn launch_windowed(path: Vec<u8>, code: Vec<u8>) -> Result<Started, String> {
         return Err(String::from("too many apps are running; close one first"));
     }
     let failed = || Err(String::from("could not start the app (out of memory or too many windows)"));
-    let title = cstr(&path);
-    let tty = unsafe { sys::tty_create(80, 25) };
-    if tty.is_null() {
-        return failed();
-    }
+    let Some(tty) = console::tty_create(80, 25) else { return failed() };
     let Some(window) = wm::create(&path, tty, core::ptr::null_mut()) else {
-        unsafe { sys::tty_destroy(tty) };
+        console::tty_destroy(tty);
         return failed();
     };
     let id = NEXT_ID.with(|n| {
@@ -120,13 +111,13 @@ fn launch_windowed(path: Vec<u8>, code: Vec<u8>) -> Result<Started, String> {
     });
     let outcome = Rc::new(Outcome::default());
     let shown = lossy(&path);
-    let app = Box::into_raw(Box::new(App { id, path: title, code, tty, window, outcome: outcome.clone() }));
+    let app = Box::into_raw(Box::new(App { id, path, code, tty, window, outcome: outcome.clone() }));
     let thread = unsafe { sys::thread_spawn(app_main, app as *mut c_void, tty) };
     if thread.is_null() {
         // SAFETY: the thread was not created, so the Box is still ours
         drop(unsafe { Box::from_raw(app) });
         wm::destroy(window);
-        unsafe { sys::tty_destroy(tty) };
+        console::tty_destroy(tty);
         return failed();
     }
     wm::set_owner(window, thread); // closing the window stops the app
@@ -154,8 +145,8 @@ pub fn launch(name: &[u8]) -> Result<Started, String> {
     if wm::active() {
         return launch_windowed(path, code);
     }
-    let result = run(&cstr(&path), &code);
-    console(b"\x1b[0m\n");
+    let result = run_app(&path, &code);
+    console::write(b"\x1b[0m\n");
     result.map(|()| Started::Finished)
 }
 
@@ -167,10 +158,10 @@ pub fn list() {
             .collect()
     });
     if lines.is_empty() {
-        console(b"  (no apps are running)\n");
+        console::write(b"  (no apps are running)\n");
     }
     for line in lines {
-        console(line.as_bytes());
+        console::write(line.as_bytes());
     }
 }
 

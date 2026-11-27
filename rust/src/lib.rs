@@ -9,6 +9,7 @@ mod sys;
 
 mod agent;
 mod apps;
+mod console;
 mod fs;
 mod gfx;
 mod home;
@@ -17,7 +18,9 @@ mod json;
 mod lua;
 mod net;
 mod pci;
+mod run;
 mod shell;
+mod start;
 mod tcp;
 mod virtio_net;
 mod wm;

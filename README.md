@@ -14,7 +14,7 @@ Guess a number from 1 to 100: _
 
 tom-os does not use Linux or any other existing kernel. Boot code, console, memory management, networking (virtio-net / ARP / IPv4 / TCP / HTTP), JSON, the window system and the agent loop are all written in this repository, in C and Rust with a NASM boot stub. Apps run on a Lua 5.4 interpreter written in safe Rust (RemedyLua, in `third_party/remedy-lua`, ported to run without an operating system). The kernel is about 1.9 MiB and boots instantly.
 
-The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, the window manager, the home screen's chat view, 2D drawing and fonts, and the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access). Still C: terminals, the keyboard, mouse and Japanese input, the other drivers, memory management and boot.
+The kernel is being moved from C to Rust piece by piece. Done so far (`rust/`): the Lua runtime and its bindings, the agent, the shell, app management, the file system, JSON, the window manager, the home screen's chat view, 2D drawing and fonts, the whole network path (HTTP client, TCP/IP, virtio-net driver, PCI access), terminals, the keyboard and mouse, the line editor and Japanese input, and start-up. Still C: the scheduler, interrupts and time, the sound driver, memory management and the small C library under them.
 
 The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but goes in a different direction. llm.asm is a chat REPL that runs model inference inside the kernel. tom-os starts with an agent that can use tools and a way to run the apps it creates.
 
@@ -324,8 +324,9 @@ python3 tools/claude_gateway.py
 | rust/src/gfx.rs  framebuffer, |                                   |
 |            fonts, 2D drawing  |                                   |
 +-------------------------------+----------------------------------+
-| kernel/  console (terminals, serial, PS/2 keyboard and mouse)     |
-|          sched (cooperative threads)  mem (heap)                  |
+| rust/src/console.rs  terminals, serial, PS/2 keyboard and mouse,  |
+|          line editor, Japanese input     start.rs  start-up       |
+| kernel/  sched (cooperative threads)  mem (heap)                  |
 |          cpu (IDT, PIC, timer, RTC)                               |
 |          ac97 (sound card, synthesizer)                           |
 | lib/     minimal libc, printf with floating point, libm (x87)     |

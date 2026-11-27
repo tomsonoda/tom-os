@@ -4,7 +4,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::ffi::{c_char, c_void};
+use core::ffi::c_char;
 
 use crate::sys;
 
@@ -52,14 +52,26 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
     let mut b = Buf([0; 256], 0);
     let _ = core::fmt::write(&mut b, format_args!("{info}"));
-    unsafe { sys::host_panic(b.0.as_ptr(), b.1) }
+    halt("Rust panic", &b.0[..b.1])
 }
 
 /// Same as TOMOS_VERSION in kernel/tomos.h.
 pub const VERSION: &str = "0.1";
 
+/// Reports a fatal error and stops the machine.
+pub fn halt(what: &str, details: &[u8]) -> ! {
+    crate::console::console_capture(core::ptr::null_mut(), 0);
+    console(alloc::format!("\n*** {what}: ").as_bytes());
+    console(details);
+    console(b"\n*** system halted\n");
+    loop {
+        // SAFETY: stops the CPU for good; nothing runs after a fatal error
+        unsafe { core::arch::asm!("cli", "hlt") };
+    }
+}
+
 pub fn console(bytes: &[u8]) {
-    unsafe { sys::console_write(bytes.as_ptr(), bytes.len()) }
+    crate::console::write(bytes)
 }
 
 /// A NUL-terminated copy for C (cut at the first NUL inside).
@@ -116,44 +128,8 @@ impl<T> KCell<T> {
     pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         f(&mut self.0.borrow_mut())
     }
-    /// Like `with`, but does nothing if the value is in use.
-    pub fn try_with(&self, f: impl FnOnce(&mut T)) {
-        if let Ok(mut v) = self.0.try_borrow_mut() {
-            f(&mut v);
-        }
+    /// Like `with`, but gives None, without calling `f`, if the value is in use.
+    pub fn try_with<R>(&self, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        self.0.try_borrow_mut().ok().map(|mut v| f(&mut v))
     }
-}
-
-/// A growable byte buffer owned by C code (`strbuf` in kernel/tomos.h).
-#[repr(C)]
-pub struct StrBuf {
-    p: *mut u8,
-    len: usize,
-    cap: usize,
-}
-
-impl StrBuf {
-    pub fn new() -> StrBuf {
-        StrBuf { p: core::ptr::null_mut(), len: 0, cap: 0 }
-    }
-    pub fn as_bytes(&self) -> &[u8] {
-        if self.p.is_null() { &[] } else { unsafe { core::slice::from_raw_parts(self.p, self.len) } }
-    }
-    pub fn as_ptr(&mut self) -> *mut c_void {
-        self as *mut StrBuf as *mut c_void
-    }
-}
-
-impl Drop for StrBuf {
-    fn drop(&mut self) {
-        unsafe { sys::free(self.p) }
-    }
-}
-
-/// Appends to a strbuf that C handed us.
-///
-/// # Safety
-/// `b` must point to a valid strbuf.
-pub unsafe fn sb_append(b: *mut c_void, bytes: &[u8]) {
-    unsafe { sys::sb_put(b, bytes.as_ptr(), bytes.len()) }
 }
