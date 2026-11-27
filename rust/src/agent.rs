@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::json::{self, Json};
 use crate::rt::{KCell, console, lossy, ui};
 use crate::apps::{self, Started};
+use crate::arch::llm;
 use crate::{cpu, fs, http, kprint, mem, net, run, tcp, wm};
 
 const MAX_STEPS: usize = 24;
@@ -144,18 +145,31 @@ fn clip(s: &[u8], max: usize) -> String {
     lossy(&s[..s.len().min(max)])
 }
 
-/// Calls the model with the conversation and appends its reply.
-fn llm_call(conv: &mut Vec<Message>) -> Result<(), String> {
+/// Sends a chat request to the LLM; gives the HTTP status and the body.
+fn chat(req: &[u8], timeout_ms: u64) -> Result<(i32, Vec<u8>), String> {
+    // some machines carry the request for us (the browser)
+    if let Some(result) = llm::post(req, timeout_ms, &tcp::wait_tick) {
+        return result;
+    }
     let (ip, port, shown) = endpoint()?;
-    let req = build_request(conv, &setting("model"));
-    let path = lossy(&setting("path"));
-    let (status, body) = http::post_json(ip, port, &path, &req, 600_000).map_err(|e| {
+    http::post_json(ip, port, &lossy(&setting("path")), req, timeout_ms).map_err(|e| {
         let mut msg = format!("LLM request to {shown} failed while {}: {}", http::phase().text(), e.text());
         if e == net::NetError::Timeout && http::phase() == http::Phase::Connecting {
             msg.push_str(" (is the LLM server running? check /info and /set llm)");
         }
         msg
-    })?;
+    })
+}
+
+/// Can the LLM be reached at all?
+fn connected() -> bool {
+    net::up() || llm::AVAILABLE
+}
+
+/// Calls the model with the conversation and appends its reply.
+fn llm_call(conv: &mut Vec<Message>) -> Result<(), String> {
+    let req = build_request(conv, &setting("model"));
+    let (status, body) = chat(&req, 600_000)?;
     drop(req);
 
     let root = json::parse(&body);
@@ -290,10 +304,9 @@ fn exec_tool(call: &ToolCall) -> Vec<u8> {
 /// Asks the LLM to turn kana into kanji; `avoid` is a previous answer to
 /// replace with another one.
 pub fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    if !net::up() {
+    if !connected() {
         return Err(String::from("no LLM for conversion"));
     }
-    let (ip, port, _) = endpoint().map_err(|_| String::from("no LLM for conversion"))?;
     let mut system = CONVERT_PROMPT.as_bytes().to_vec();
     if let Some(a) = avoid {
         system.extend_from_slice(b" The user did not want this conversion: ");
@@ -313,7 +326,7 @@ pub fn convert_kana(kana: &[u8], avoid: Option<&[u8]>) -> Result<Vec<u8>, String
     json::field(&mut req, "content", kana);
     req.extend_from_slice(b"}]}");
 
-    let (status, body) = http::post_json(ip, port, &lossy(&setting("path")), &req, 60_000).map_err(|e| String::from(e.text()))?;
+    let (status, body) = chat(&req, 60_000).map_err(|_| String::from("the LLM did not answer"))?;
     let root = json::parse(&body);
     let text = root
         .as_ref()
@@ -405,7 +418,7 @@ fn run_turn(conv: &mut Vec<Message>, user_text: &[u8]) {
 /// One request from the user: the model answers, possibly through several
 /// rounds of tool calls.
 pub fn turn(user_text: &[u8]) {
-    if !net::up() {
+    if !connected() {
         kprint!(
             "{}[error] no network device found. Start QEMU with -netdev user,id=n0 -device virtio-net-pci,netdev=n0\n{}",
             ui::ERROR,

@@ -5,6 +5,7 @@ pub mod boot;
 pub mod cpu;
 pub mod display;
 pub mod input;
+pub mod llm;
 mod pci;
 pub mod serial;
 pub mod sound;

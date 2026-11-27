@@ -3,6 +3,8 @@
 //! machines (PCI I/O ports on a PC, memory-mapped registers on ARM); that
 //! is behind `Transport`, provided by `arch::virtio`.
 
+#![allow(dead_code)] // not every machine has every kind of device
+
 use alloc::alloc::{Layout, alloc_zeroed};
 use alloc::vec::Vec;
 use core::ptr::{read_volatile, write_volatile};

@@ -131,6 +131,9 @@ pub fn init() {
     }
 }
 
+/// Called often by the scheduler; nothing to do on this machine.
+pub fn relax() {}
+
 /// Stops the CPU for good.
 pub fn stop() -> ! {
     loop {

@@ -22,6 +22,12 @@ fn set_phase(p: Phase) {
     PHASE.store(p as u8, Ordering::Relaxed);
 }
 
+/// For requests that do not go through this client: the request is out.
+#[allow(dead_code)]
+pub fn waiting() {
+    set_phase(Phase::Waiting);
+}
+
 pub fn reset_phase() {
     set_phase(Phase::Connecting);
 }

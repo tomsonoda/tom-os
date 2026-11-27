@@ -375,16 +375,10 @@ pub type Clock = crate::nostd::sync::Arc<dyn Fn() -> crate::nostd::time::Duratio
 /// The `os` library's clocks where the platform has them: the system time, and the time
 /// since the state was made. A browser (`wasm32-unknown-unknown`) has neither in `std`:
 /// there the host supplies them ([`Lua::set_os_clocks`]), or they read as 0.
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub(crate) fn default_os_clocks() -> (Option<Clock>, Option<Clock>) {
     let start = crate::nostd::time::Instant::now();
     let wall: Clock = Arc::new(|| crate::nostd::time::SystemTime::now().duration_since(crate::nostd::time::UNIX_EPOCH).unwrap_or_default());
     (Some(wall), Some(Arc::new(move || start.elapsed())))
-}
-
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-pub(crate) fn default_os_clocks() -> (Option<Clock>, Option<Clock>) {
-    (None, None)
 }
 
 /// A handle that stops the state's running call from any thread: [`Interrupt::interrupt`]

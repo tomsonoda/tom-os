@@ -18,7 +18,7 @@ The project was inspired by [llm.asm](https://github.com/alesha-pro/llm.asm) but
 
 ## Status
 
-Runs under QEMU as a PC (x86-64) and as a 64-bit ARM machine (aarch64, QEMU's `virt` machine). The ARM version is the first step towards Android devices; it does not run on a real phone yet.
+Runs under QEMU as a PC (x86-64) and as a 64-bit ARM machine (aarch64, QEMU's `virt` machine), and in a web browser (the kernel compiled to WebAssembly; see [In a browser](#in-a-browser)). The ARM version is the first step towards Android devices; it does not run on a real phone yet.
 
 | Works | Not yet |
 |---|---|
@@ -68,6 +68,26 @@ It is the same kernel: only `rust/src/arch/aarch64` (about 1,500 lines) differs 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
 `make test` does not use a real LLM. `tests/lua_test.py` runs the scripts in `tests/lua` inside tom-os and compares their output with what C Lua 5.4 prints, and checks that an app cannot exhaust memory or ignore `Ctrl-C`. `tests/sound_test.py` records what QEMU plays (its WAV backend) and checks pitches and timing. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` (windows layout) and `tests/phone_test.py` (full-screen layout) cover graphical mode: they send key presses and absolute mouse movement through QEMU and check pixels in screenshots (switching apps by dragging, the card view, clicks reaching apps, a graphics app reacting to held keys).
+
+## In a browser
+
+The same kernel also builds for WebAssembly, with a web page as its machine: the page's canvas is the screen, its events are the keyboard, pointer and touch screen, and the page carries the requests to the LLM. Nothing is installed and nothing runs on a server; it works on phones too.
+
+```sh
+make web        # builds web/tomos.wasm (needs wasm-opt: apt or brew install binaryen)
+make run-web    # serves it on http://localhost:8000
+make test-web   # drives it in headless Chromium (needs Node.js and Playwright)
+```
+
+The files in `web/` are a static site. `.github/workflows/pages.yml` publishes them to GitHub Pages whenever `main` changes, once Pages is switched on for the repository (Settings -> Pages -> Source: "GitHub Actions").
+
+The gear button chooses which model writes the apps:
+
+- **Demo** (the default): no model, a few scripted answers that build a small app, so that the page shows what tom-os does.
+- **Claude**: your own Anthropic API key. The page calls the API directly from your browser through the official SDK (loaded from esm.sh); the key is stored only in the browser's local storage. Use a key you are willing to keep in that browser.
+- **Another server**: the URL of an OpenAI-compatible chat completions endpoint that allows requests from web pages (for example Ollama started with `OLLAMA_ORIGINS=*`).
+
+How it works: WebAssembly has a single call stack and cannot block, while the kernel switches between threads and waits for input. The build is therefore passed through Binaryen's "asyncify", which lets a call out to the page unwind the stack into a buffer and rewind it later; the page (`web/tomos.js`) uses that to switch threads and to give the browser time to deliver events and repaint. The machine layer is `rust/src/arch/wasm32` (about 450 lines). The browser version has no sound yet, text is English, and Japanese is typed with the input method of the browser's own system.
 
 ## Running
 
@@ -345,6 +365,7 @@ python3 tools/claude_gateway.py
 | rust/src/arch/  what differs between machines                     |
 |   x86_64/   Multiboot, PIC/PIT/RTC, COM1, PS/2, VGA + BGA display,|
 |             PCI, AC'97          (+ arch/x86_64/boot.asm)          |
+|   wasm32/   the browser: canvas, events, fetch (with web/tomos.js)|
 |   aarch64/  device tree, GIC + generic timer, PL011/16550, virtio |
 |             (mmio and PCI) keyboard and tablet, ramfb, virtio-gpu |
 +------------------------------------------------------------------+

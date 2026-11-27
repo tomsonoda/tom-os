@@ -1,6 +1,8 @@
 //! The tom-os kernel. Everything is Rust except the boot code and the
 //! thread switch (arch/x86_64/boot.asm).
 #![no_std]
+// the browser version has no network card or sound card to drive
+#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
 extern crate alloc;
 

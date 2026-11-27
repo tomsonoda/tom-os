@@ -292,7 +292,8 @@ pub fn set_wait_hook(hook: Option<fn()>) {
     WAIT_HOOK.with(|h| *h = hook);
 }
 
-fn wait_tick() {
+/// Calls the wait hook if a second has passed since the last call.
+pub fn wait_tick() {
     let Some(hook) = WAIT_HOOK.with(|h| *h) else { return };
     if now() - LAST_TICK.load(Ordering::Relaxed) >= 1000 {
         LAST_TICK.store(now(), Ordering::Relaxed);

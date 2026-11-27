@@ -10,6 +10,7 @@
 //! - `display`: the framebuffer and, if there is one, the text screen
 //! - `virtio`: where virtio devices are
 //! - `sound`: the sound card
+//! - `llm`: a way to the LLM other than the kernel's network stack
 
 #[cfg(target_arch = "x86_64")]
 mod x86_64;
@@ -20,3 +21,8 @@ pub use x86_64::*;
 mod aarch64;
 #[cfg(target_arch = "aarch64")]
 pub use aarch64::*;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm32;
+#[cfg(target_arch = "wasm32")]
+pub use wasm32::*;

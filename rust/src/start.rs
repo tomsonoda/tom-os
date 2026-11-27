@@ -45,7 +45,13 @@ pub fn main(boot_arg: usize) -> ! {
 
     kprint!("{}\x1b[1mtom-os {}\x1b[0m - an operating system whose apps are written by an LLM\n", ui::HIDE, rt::VERSION);
     let memory = mem::total() >> 20;
-    let network = if net::up() { "up" } else { "not found" };
+    let network = if net::up() {
+        "up"
+    } else if crate::arch::llm::AVAILABLE {
+        "through the browser"
+    } else {
+        "not found"
+    };
     kprint!("{memory} MiB memory, network {network}. Type /help for commands.\n\n{}", ui::END);
     shell::run()
 }

@@ -144,6 +144,25 @@ $(BUILD)/arch/x86_64/boot.o: arch/x86_64/boot.asm
 	$(AS) -f elf64 $< -o $@
 endif
 
+# The browser version: the kernel compiled to WebAssembly, next to the page
+# that is its machine (web/). Needs wasm-opt from Binaryen (apt/brew install
+# binaryen) for the "asyncify" step that lets the kernel switch threads and
+# wait. `make run-web` serves it on http://localhost:8000.
+WASM := rust/target/wasm32-unknown-unknown/release/tomos_rt.wasm
+
+web: web/tomos.wasm
+
+web/tomos.wasm: $(RUST_SRCS)
+	cd rust && cargo rustc --release --target wasm32-unknown-unknown --crate-type cdylib
+	wasm-opt -all --asyncify --pass-arg=asyncify-imports@env.js_switch,env.js_wait -O2 $(WASM) -o $@
+	@ls -l $@ | awk '{printf "built %s (%d KiB)\n", $$NF, $$5 / 1024}'
+
+run-web: web
+	cd web && python3 -m http.server 8000
+
+test-web: web
+	node tests/web_test.js
+
 # Text mode: the serial console in this terminal. Ctrl-C goes to tom-os;
 # quit QEMU with Ctrl-A X.
 run: $(KERNEL)
@@ -195,4 +214,4 @@ test-iso: $(ISO)
 clean:
 	rm -rf $(BUILD) rust/target
 
-.PHONY: all run run-gui run-vga test iso run-iso test-iso clean
+.PHONY: web run-web test-web all run run-gui run-vga test iso run-iso test-iso clean

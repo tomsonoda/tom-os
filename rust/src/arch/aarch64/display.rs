@@ -12,6 +12,13 @@ use crate::mem;
 use crate::rt::KCell;
 use crate::virtio::{self, Kind, Queue, Transport};
 
+/// What the home screen says.
+pub const GREETING: &str = "こんにちは";
+pub const INPUT_HINT: &str = "Ask tom-os anything...   (Option/Alt+Space: 日本語)";
+
+/// The smallest screen the desktop is laid out for.
+pub const MIN_SIZE: (i32, i32) = (800, 600);
+
 pub const TEXT_SCREEN: Option<(i32, i32)> = None;
 
 pub fn text_flush(_cells: &[u16], _cols: usize, _dirty: u64, _cursor: (i32, i32)) {}

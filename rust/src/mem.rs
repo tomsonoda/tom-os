@@ -111,7 +111,7 @@ impl Heap {
 
     /// The block size for a request of `n` bytes.
     fn block_size(n: usize) -> Option<usize> {
-        if n > 1 << 40 {
+        if n > usize::MAX / 4 {
             return None;
         }
         Some(((n + HEADER + 15) & !15).max(MIN_BLOCK))

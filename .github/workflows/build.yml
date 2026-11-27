@@ -15,7 +15,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y nasm qemu-system-x86 qemu-system-arm grub-pc-bin grub-common xorriso mtools
+          sudo apt-get install -y nasm qemu-system-x86 qemu-system-arm grub-pc-bin grub-common xorriso mtools binaryen
           pip install anthropic
       - name: Build kernel
         run: make
@@ -31,6 +31,13 @@ jobs:
         run: make ARCH=aarch64 test
       - name: Test (ARM, virtio on PCI and virtio-gpu)
         run: make ARCH=aarch64 DEVICES=pci test
+      - name: Build the browser version
+        run: make web
+      - name: Test (browser)
+        run: |
+          npm install --no-save playwright
+          npx playwright install --with-deps chromium
+          make test-web
       - uses: actions/upload-artifact@v4
         with:
           name: tomos-iso

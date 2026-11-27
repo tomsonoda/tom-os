@@ -80,8 +80,8 @@ const CURSOR: [&[u8]; 17] = [
 const CURSOR_W: i32 = 12;
 const CURSOR_H: i32 = 17;
 
-const MIN_W: i32 = 800;
-const MIN_H: i32 = 600;
+const MIN_W: i32 = crate::arch::display::MIN_SIZE.0;
+const MIN_H: i32 = crate::arch::display::MIN_SIZE.1;
 
 pub const LAYOUT_FULL: i32 = 0;
 pub const LAYOUT_WINDOWS: i32 = 1;

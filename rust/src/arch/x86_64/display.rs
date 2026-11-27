@@ -4,6 +4,13 @@
 use super::pci::{self, inw, outb, outw};
 use crate::rt::KCell;
 
+/// What the home screen says.
+pub const GREETING: &str = "こんにちは";
+pub const INPUT_HINT: &str = "Ask tom-os anything...   (Option/Alt+Space: 日本語)";
+
+/// The smallest screen the desktop is laid out for.
+pub const MIN_SIZE: (i32, i32) = (800, 600);
+
 /// The text screen the machine starts with: columns and rows.
 pub const TEXT_SCREEN: Option<(i32, i32)> = Some((80, 25));
 

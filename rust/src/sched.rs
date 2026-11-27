@@ -123,6 +123,7 @@ fn tick() {
 fn switch_next(idle: bool) {
     me(|t| t.idle = idle);
     tick();
+    cpu::relax();
 
     let all_idle = SCHED.with(|s| {
         let current = s.current;
@@ -194,16 +195,11 @@ pub fn spawn(f: Box<dyn FnOnce()>, tty: usize) -> Option<ThreadId> {
     let mut stack = Vec::new();
     stack.try_reserve_exact(STACK_SIZE).ok()?;
     stack.resize(STACK_SIZE, 0u8);
-    let top = (stack.as_ptr() as usize + STACK_SIZE) & !15;
-    let frame = thread::first_frame(thread_entry);
-    let at = top - size_of_val(&frame) - stack.as_ptr() as usize;
-    for (i, word) in frame.iter().enumerate() {
-        stack[at + 8 * i..at + 8 * i + 8].copy_from_slice(&word.to_le_bytes());
-    }
+    let rsp = thread::first_frame(&mut stack, thread_entry);
     SCHED.with(|s| {
         let id = s.next_id;
         let slot = s.threads.iter_mut().skip(1).find(|t| t.state == State::Free)?;
-        *slot = Thread { id, rsp: (top - size_of_val(&frame)) as u64, stack, state: State::Running, tty, entry: Some(f), ..FREE };
+        *slot = Thread { id, rsp, stack, state: State::Running, tty, entry: Some(f), ..FREE };
         s.next_id += 1;
         Some(id)
     })

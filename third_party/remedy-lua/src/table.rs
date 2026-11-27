@@ -1373,6 +1373,7 @@ impl ArrPart {
 /// each made whole and nil, `used` slots of them in the storage.
 #[cfg(any(target_family = "wasm", feature = "segmented-arrays"))]
 mod seg {
+    use crate::nostd::prelude::*;
     use crate::value::Value;
 
     #[cfg(feature = "segmented-arrays")]

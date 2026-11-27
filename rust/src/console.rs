@@ -590,6 +590,17 @@ pub fn key(code: u8, extended: bool, down: bool) {
     }
 }
 
+/// Text typed by other means than single keys (an on-screen keyboard, the
+/// host's input method).
+#[allow(dead_code)]
+pub fn type_text(text: &[u8]) {
+    if wm::active() {
+        wm::key(0, true, false, Some(text));
+    } else {
+        tty_input(SHELL_TTY, text);
+    }
+}
+
 /// Drains the serial line, the keyboard and the pointer. Called from the
 /// scheduler's tick.
 pub fn poll_input() {

@@ -84,11 +84,7 @@ def main():
         step("boots to the home screen (the prompt) with a status bar and a home bar", boot)
 
         def chat():
-            if vm.iso:  # /set llm already left the welcome screen: type the request
-                vm.send("電卓を作って\n")
-            else:
-                scr.wait_pixel(222, 373, 0xFFFFFF, "a suggestion on the welcome screen")
-                ptr.click(222, 373)              # "電卓を作って"
+            vm.send("電卓を作って\n")
             vm.expect("echo: 電卓を作って")
             vm.expect(PROMPT)
             time.sleep(0.5)
@@ -97,7 +93,7 @@ def main():
             assert USER_BUBBLE in colours, "the request in a bubble"
             assert ACCENT in colours, "the reply next to the tom-os mark"
             vm.command("/info", "graphical (full screen)", "absolute pointer", PROMPT)
-        step("the home screen is a chat: suggestions, bubbles, replies", chat)
+        step("the home screen is a chat: bubbles and replies", chat)
 
         def run_app():
             vm.command('/lua tomos.write_file("apps/clicker.lua", [[%s]])' % CLICK_APP, PROMPT)

@@ -12,6 +12,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use crate::gfx::{Surface, font_wide, utf8_decode};
+use crate::arch::display;
 use crate::rt::KCell;
 use crate::{console, sched};
 
@@ -46,20 +47,9 @@ const C_SPARK: u32 = 0xFFC53D;
 const C_SEND_OFF: u32 = 0xCBD6D4;
 const WHITE: u32 = 0xFFFFFF;
 
-const SUGGESTIONS: [&str; 4] =
-    ["電卓を作って", "ブロック崩しを作って", "Make a drawing app I can use with the mouse", "今日は何曜日？"];
-
 struct Entry {
     kind: Kind,
     text: Vec<u8>,
-}
-
-struct Chip {
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    text: &'static str,
 }
 
 pub struct HomeView {
@@ -84,7 +74,6 @@ pub struct HomeView {
     scroll: i32,
     max_scroll: i32,
     dirty: bool,
-    chips: Vec<Chip>,
     send: (i32, i32, i32), // x, y, radius of the send button
 }
 
@@ -249,7 +238,6 @@ impl HomeView {
             scroll: 0,
             max_scroll: 0,
             dirty: true,
-            chips: Vec::new(),
             send: (0, 0, 0),
         }
     }
@@ -359,43 +347,18 @@ impl HomeView {
 
     /// A click at (x, y) in the view; returns what it types, if anything.
     pub fn click(&mut self, x: i32, y: i32) -> Option<Vec<u8>> {
-        if let Some(c) = self.chips.iter().find(|c| x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) {
-            return Some([c.text.as_bytes(), b"\n"].concat());
-        }
         let (sx, sy, r) = self.send;
         let (dx, dy) = (x - sx, y - sy);
         (!self.input.is_empty() && dx * dx + dy * dy <= r * r).then(|| b"\n".to_vec())
     }
 
-    fn draw_welcome(&mut self, s: &mut Surface, col_x: i32, col_w: i32, bottom: i32) {
-        let hello = "こんにちは".as_bytes();
+    fn draw_welcome(&mut self, s: &mut Surface, bottom: i32) {
+        let hello = display::GREETING.as_bytes();
         let sub = b"What would you like to make? Ask in any language.";
         let y = (bottom / 2 - 70).max(20);
         draw_logo(s, s.w / 2 - 20, y - 52, 40);
         s.text((s.w - text_w(hello) * 2) / 2, y, hello, C_TEXT, None, 2);
         s.text((s.w - text_w(sub)) / 2, y + 44, sub, C_MUTED, None, 1);
-        // suggestion chips, centred, in rows
-        let widths = SUGGESTIONS.map(|t| text_w(t.as_bytes()) + 28);
-        let (mut row_y, mut x, mut row_start) = (y + 84, 0, 0);
-        for i in 0..=SUGGESTIONS.len() {
-            if i == SUGGESTIONS.len() || (x + widths[i] > col_w && i > row_start) {
-                let mut cx = col_x + (col_w - (x - 10)) / 2;
-                for j in row_start..i {
-                    let c = Chip { x: cx, y: row_y, w: widths[j], h: 32, text: SUGGESTIONS[j] };
-                    s.round(c.x, c.y, c.w, c.h, 16, C_BOX_LINE);
-                    s.round(c.x + 1, c.y + 1, c.w - 2, c.h - 2, 15, C_BOX);
-                    s.text(c.x + 14, c.y + 8, c.text.as_bytes(), C_TEXT, None, 1);
-                    cx += c.w + 10;
-                    self.chips.push(c);
-                }
-                row_y += 42;
-                x = 0;
-                row_start = i;
-            }
-            if i < SUGGESTIONS.len() {
-                x += widths[i] + 10;
-            }
-        }
     }
 
     fn draw_input(&mut self, s: &mut Surface, col_x: i32, col_w: i32, box_y: i32, box_h: i32, inner_w: i32) {
@@ -403,7 +366,7 @@ impl HomeView {
         s.round(col_x + 1, box_y + 1, col_w - 2, box_h - 2, 15, C_BOX);
         let (tx, ty) = (col_x + 18, box_y + 12);
         if self.input.is_empty() && self.comp.is_empty() {
-            let placeholder = "Ask tom-os anything...   (Option/Alt+Space: 日本語)";
+            let placeholder = display::INPUT_HINT;
             s.text(tx, ty + 2, placeholder.as_bytes(), C_MUTED, None, 1);
             s.fill(tx, ty, 2, 18, C_ACCENT);
         } else {
@@ -467,11 +430,10 @@ impl HomeView {
         let bottom = box_y - 14;
 
         // conversation
-        self.chips.clear();
         let shown = self.entries.iter().any(|e| !trimmed(&e.text).is_empty());
         let status = !self.status.is_empty();
         if !shown && !status {
-            self.draw_welcome(s, col_x, col_w, bottom);
+            self.draw_welcome(s, bottom);
             self.max_scroll = 0;
         } else {
             let mut total: i32 = self.entries.iter().map(|e| entry_block(None, e, col_x, col_w, 0) + GAP).sum();

@@ -7,6 +7,7 @@ pub mod boot;
 pub mod cpu;
 pub mod display;
 pub mod input;
+pub mod llm;
 mod fdt;
 mod mmio;
 mod pci;
