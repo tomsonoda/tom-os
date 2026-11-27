@@ -66,6 +66,16 @@ else
 QEMU_DISPLAY ?=
 endif
 
+# Sound: an AC'97 card played through the host. macOS: coreaudio. On Linux
+# pick your sound system, e.g. AUDIO=pa (PulseAudio/PipeWire) or AUDIO=alsa;
+# the default "none" keeps the card but plays nothing.
+ifeq ($(shell uname -s),Darwin)
+AUDIO ?= coreaudio
+else
+AUDIO ?= none
+endif
+QEMU_FLAGS += -audiodev $(AUDIO),id=snd -device AC97,audiodev=snd
+
 ISO := $(BUILD)/tomos.iso
 
 all: $(KERNEL)
@@ -110,6 +120,7 @@ test: $(KERNEL)
 	python3 tests/gui_test.py
 	python3 tests/phone_test.py
 	python3 tests/ime_test.py
+	python3 tests/sound_test.py
 	python3 tests/gateway_test.py
 
 # Bootable CD image (BIOS boot via GRUB). Needs grub-pc-bin, xorriso and mtools.
@@ -125,6 +136,7 @@ $(ISO): $(KERNEL) iso/grub.cfg
 
 run-iso: $(ISO)
 	$(QEMU) -m $(MEM) -no-reboot -cdrom $(ISO) -boot d -vga none -device VGA,vgamem_mb=64 $(QEMU_DISPLAY) \
+	    -audiodev $(AUDIO),id=snd -device AC97,audiodev=snd \
 	    -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
 
 test-iso: $(ISO)

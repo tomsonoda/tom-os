@@ -46,6 +46,7 @@ static void cmd_info(void) {
                 wm_scale(), mouse_absolute() ? "absolute" : "relative");
     else
         kprintf("display: text\n");
+    kprintf("sound  : %s\n", sound_available() ? "AC'97, 48 kHz stereo" : "no sound card (start QEMU with -device AC97)");
     kprintf("llm    : http://%s%s  model=%s\n", agent_setting("llm"), agent_setting("path"),
             agent_setting("model"));
 }

@@ -12,6 +12,7 @@ void kmain(u32 mb_info, u32 magic) {
     mem_init(mb_info);
     cpu_init();
     net_init();
+    sound_init();
 
     /* Graphical mode unless gui=0 was passed or no suitable display exists. */
     char v[8];

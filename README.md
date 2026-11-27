@@ -25,7 +25,8 @@ First milestone. Runs on x86-64 under QEMU.
 | Boot in QEMU and talk to the agent | Android devices / aarch64 |
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
 | Serial and VGA text consoles; Japanese text on screen and Japanese input (romaji, kanji conversion by the LLM) in graphical mode | Other non-ASCII scripts on screen; Japanese on the VGA text screen (text mode) |
-| Graphical desktop: a chat-style home screen for the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
+| Graphical desktop: a chat-style home screen for the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | GPU acceleration, touch gestures from a trackpad |
+| Sound: an AC'97 driver and a synthesizer (tones, melodies, samples) for apps | Recording, sound files (WAV/MP3) |
 | Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
 | Several apps running at once | Process isolation between apps |
 | Booting from an ISO (BIOS) | UEFI boot, installing to disk |
@@ -50,7 +51,7 @@ make test-iso # runs the same test booting from the ISO
 
 Building the ISO also needs `grub-pc-bin`, `xorriso` and `mtools`. A prebuilt ISO can be downloaded from the GitHub Actions runs of this repository (artifact `tomos-iso`).
 
-`make test` does not use a real LLM. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` (windows layout) and `tests/phone_test.py` (full-screen layout) cover graphical mode: they send key presses and absolute mouse movement through QEMU and check pixels in screenshots (switching apps by dragging, the card view, clicks reaching apps, a graphics app reacting to held keys).
+`make test` does not use a real LLM. `tests/sound_test.py` records what QEMU plays (its WAV backend) and checks pitches and timing. `tests/gateway_test.py` runs the Claude gateway against a fake, slow Claude (it needs `pip install anthropic`, but no key). `tools/mock_llm.py` returns scripted replies, including tool calls. `tests/boot_test.py` covers text mode (boot, HTTP, app generation, running the app interactively, command history, power-off). `tests/gui_test.py` (windows layout) and `tests/phone_test.py` (full-screen layout) cover graphical mode: they send key presses and absolute mouse movement through QEMU and check pixels in screenshots (switching apps by dragging, the card view, clicks reaching apps, a graphics app reacting to held keys).
 
 ## Running
 
@@ -126,6 +127,16 @@ The input method of your computer does not reach the QEMU window, so tom-os has 
 Lines that start with `/` are commands and stay in plain letters. The LLM understands hiragana too, so converting is optional when you write to the agent. Typing in the terminal that started QEMU (with your computer's own input method) also works.
 
 The up and down arrow keys recall earlier lines at the `tom-os>` prompt.
+
+### Sound
+
+tom-os has its own driver for the AC'97 sound card that QEMU emulates; QEMU plays the sound through your computer. The `make` targets add the card:
+
+- macOS: sound goes to the Mac's speakers (CoreAudio) automatically.
+- Linux: choose your sound system, for example `make run-gui AUDIO=pa` (PulseAudio or PipeWire) or `AUDIO=alsa`. The default `none` keeps the card but plays nothing.
+- By hand: add `-audiodev coreaudio,id=snd -device AC97,audiodev=snd` (or another QEMU audio backend instead of `coreaudio`).
+
+`/info` shows whether a sound card was found. Apps play sound with the `sound` library below; ask the agent for a game "with sound effects" or "that plays a melody".
 
 ### Screen size
 
@@ -231,6 +242,7 @@ make run-gui   # graphical desktop; or: make run for text mode in the terminal
 brew install qemu
 qemu-system-x86_64 -m 256M -cdrom tomos.iso -boot d \
   -vga none -device VGA,vgamem_mb=64 -display cocoa,zoom-to-fit=on \
+  -audiodev coreaudio,id=snd -device AC97,audiodev=snd \
   -netdev user,id=n0 -device virtio-net-pci,netdev=n0 -serial mon:stdio
 ```
 
@@ -276,6 +288,7 @@ python3 tools/claude_gateway.py
 5. "Make me a ... app" produces an app, and `/run <name>` starts it
 6. In graphical mode: "make a breakout game" opens a playable game full screen; clicks work where you click; clicking the bottom bar goes back to the prompt, and the card view brings the game back
 7. Japanese: `Option+Space` shows あ in the status bar; typing `nihongo` and `Space` turns into 日本語
+8. Sound: `/info` shows the sound card; `/lua sound.melody("C4 E4 G4 C5")` plays from the Mac's speakers
 
 ## How it works
 
@@ -297,6 +310,7 @@ python3 tools/claude_gateway.py
 | kernel/  console (terminals, serial, PS/2 keyboard and mouse)     |
 |          sched (cooperative threads)  mem (heap)                  |
 |          cpu (IDT, PIC, timer, RTC)  virtio_net (PCI, virtio)     |
+|          ac97 (sound card, synthesizer)                           |
 | lib/     minimal libc, printf with floating point, libm (x87),    |
 |          JSON                                                     |
 | arch/x86_64/boot.asm  Multiboot1 -> long mode, thread switch      |
@@ -319,6 +333,13 @@ In addition to Lua's `string`, `table`, `math`, `utf8` and `coroutine`:
 - `tomos.cls()` `tomos.getkey([timeout_ms])` `tomos.sleep(ms)` `tomos.readline([prompt])` `tomos.time_ms()` `tomos.files()` `tomos.read_file(path)` `tomos.write_file(path, data)`
 - `require('name')` (looks for `name.lua`, `apps/name.lua`, `lib/name.lua`)
 - Text screen control through ANSI escape sequences (colors, cursor movement, clearing)
+
+Sound (when `sound.available()` is true). Every call except `wait` returns at once, and sounds mix:
+
+- `sound.tone(hz, ms [, wave, volume])`: waves `"square"` (default), `"sine"`, `"triangle"`, `"saw"`, `"noise"`; volume 0..1
+- `sound.note("C5", ms [, wave, volume])`, `sound.melody("C4:200 E4 G4:400 R:100 C5" [, default_ms [, wave, volume]])` (`R` is a rest, `#` and `b` raise and lower)
+- `sound.play(samples, rate [, volume])` plays a table of numbers between -1 and 1
+- `sound.beep()`, `sound.stop()`, `sound.playing()`, `sound.wait()`
 
 Graphics (graphical mode only; `tomos.gui` tells an app whether it is available):
 
@@ -358,7 +379,7 @@ end
 3. Local inference inside the kernel with a small model
 4. aarch64 support, on the way to Android devices
 5. Other scripts on screen (a larger Unicode font), keyboard layouts other than US, a local kana-kanji dictionary
-6. Sound, images, and a richer widget set for apps
+6. Images, sound files, and a richer widget set for apps
 7. App isolation (user mode, memory protection)
 
 ## License

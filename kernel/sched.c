@@ -49,6 +49,7 @@ static void tick(void) {
     busy = 1;
     console_poll_input();
     net_poll();
+    sound_poll();
     if (wm_active()) wm_tick();
     busy = 0;
 }

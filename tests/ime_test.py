@@ -18,6 +18,7 @@ PROMPT = boot_test.PROMPT
 STATUS_H = 24
 BLACK = 0x000000
 IME_ON = 0xD0794F   # indicator background when on
+IME_OFF = 0xE4DED4  # ... and when off
 W = 1024
 
 
@@ -65,8 +66,8 @@ def main():
         step("Japanese text is drawn, two columns per character", display)
 
         def toggle():
-            scr.grab()
-            off = scr.pixel(W - 40 - 84 + 2, 5)
+            off = IME_OFF
+            scr.wait_pixel(W - 40 - 84 + 2, 5, off, "indicator shows A")
             mon.cmd("sendkey alt-spc")
             scr.wait_pixel(W - 40 - 84 + 2, 5, IME_ON, "indicator shows あ")
             mon.cmd("sendkey alt-spc")

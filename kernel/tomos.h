@@ -12,6 +12,8 @@ typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
+typedef int16_t s16;
+typedef int64_t s64;
 
 /* ---- port I/O ---- */
 static inline void outb(u16 p, u8 v) { __asm__ volatile("outb %0, %1" : : "a"(v), "Nd"(p)); }
@@ -139,6 +141,18 @@ void sleep_ms(u64 ms);
 u64 rtc_unix_time(void); /* wall clock, UTC */
 void cpu_poweroff(void);
 void cpu_reboot(void);
+
+/* ---- sound (kernel/ac97.c) ---- */
+enum { SOUND_SQUARE, SOUND_SINE, SOUND_TRIANGLE, SOUND_SAW, SOUND_NOISE };
+int sound_init(void); /* 0 if an AC'97 device was found */
+int sound_available(void);
+void sound_poll(void); /* keeps the output buffers filled; called from the scheduler tick */
+/* Non-blocking; owner (may be NULL) groups sounds for sound_stop/sound_busy. */
+int sound_tone(double freq, int ms, double vol, int wave, int delay_ms, void *owner);
+int sound_pcm(const float *samples, size_t n, int rate, double vol, int delay_ms, void *owner);
+int sound_melody(const char *notes, int default_ms, double vol, int wave, void *owner);
+void sound_stop(void *owner); /* NULL: everything */
+int sound_busy(void *owner);
 
 /* ---- PCI (kernel/virtio_net.c) ---- */
 u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off);

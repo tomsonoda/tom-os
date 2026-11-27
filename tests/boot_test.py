@@ -15,7 +15,7 @@ PROMPT = "tom-os>"
 
 
 class VM:
-    def __init__(self, port, gui=False, monitor=None, qmp=None, args=""):
+    def __init__(self, port, gui=False, monitor=None, qmp=None, args="", qemu_args=()):
         # TOMOS_ISO=<path> boots the CD image through GRUB instead of loading
         # the kernel directly; the LLM address is then set with /set.
         self.iso = os.environ.get("TOMOS_ISO")
@@ -30,7 +30,7 @@ class VM:
         self.proc = subprocess.Popen(
             [os.environ.get("QEMU", "qemu-system-x86_64"), "-m", "256M", "-no-reboot",
              "-display", "none", "-serial", "stdio", "-vga", "none", "-device", "VGA,vgamem_mb=64",
-             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + mon + boot,
+             "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0"] + mon + boot + list(qemu_args),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         self.gui = gui
         self.raw = b""  # decoded as a whole: multi-byte characters arrive split

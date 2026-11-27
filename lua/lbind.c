@@ -851,6 +851,121 @@ static const luaL_Reg gfx_funcs[] = {
     {"line", g_line}, {"circle", g_circle}, {"text", g_text}, {"flip", g_flip}, {"key", g_key},
     {"mouse", g_mouse}, {"size", g_size}, {"rgb", g_rgb}, {NULL, NULL}};
 
+/* ----------------------------------------------------------------- sound */
+static int wave_arg(lua_State *L, int idx, int def) {
+    static const char *const names[] = {"square", "sine", "triangle", "saw", "noise", NULL};
+    if (lua_isnoneornil(L, idx)) return def;
+    return luaL_checkoption(L, idx, NULL, names);
+}
+
+/* Optional arguments after the required ones: either (wave, volume) or a
+ * table {wave=, volume=, delay=}. */
+static void sound_opts(lua_State *L, int idx, int *wave, double *vol, int *delay) {
+    if (lua_istable(L, idx)) {
+        lua_getfield(L, idx, "wave");
+        *wave = wave_arg(L, -1, *wave);
+        lua_getfield(L, idx, "volume");
+        *vol = luaL_optnumber(L, -1, *vol);
+        lua_getfield(L, idx, "delay");
+        *delay = (int)luaL_optinteger(L, -1, *delay);
+        lua_pop(L, 3);
+    } else {
+        *wave = wave_arg(L, idx, *wave);
+        *vol = luaL_optnumber(L, idx + 1, *vol);
+    }
+}
+
+static int s_available(lua_State *L) {
+    lua_pushboolean(L, sound_available());
+    return 1;
+}
+
+static int s_tone(lua_State *L) {
+    double f = luaL_checknumber(L, 1);
+    int ms = (int)luaL_checknumber(L, 2), wave = SOUND_SQUARE, delay = 0;
+    double vol = 0.5;
+    sound_opts(L, 3, &wave, &vol, &delay);
+    lua_pushboolean(L, sound_tone(f, ms, vol, wave, delay, thread_data()) == 0);
+    return 1;
+}
+
+static int s_note(lua_State *L) {
+    const char *name = luaL_checkstring(L, 1);
+    int ms = (int)luaL_optnumber(L, 2, 200), wave = SOUND_SQUARE, delay = 0;
+    double vol = 0.5;
+    sound_opts(L, 3, &wave, &vol, &delay);
+    char buf[32];
+    snprintf(buf, sizeof buf, "%s:%d", name, ms);
+    sound_melody(buf, ms, vol, wave, thread_data());
+    return 0;
+}
+
+static int s_melody(lua_State *L) {
+    const char *notes = luaL_checkstring(L, 1);
+    int wave = SOUND_SQUARE, delay = 0, len = 200;
+    double vol = 0.5;
+    if (lua_istable(L, 2)) {
+        lua_getfield(L, 2, "length");
+        len = (int)luaL_optinteger(L, -1, len);
+        lua_pop(L, 1);
+        sound_opts(L, 2, &wave, &vol, &delay);
+    } else {
+        len = (int)luaL_optinteger(L, 2, len);
+        sound_opts(L, 3, &wave, &vol, &delay);
+    }
+    lua_pushinteger(L, sound_melody(notes, len, vol, wave, thread_data()));
+    return 1;
+}
+
+static int s_play(lua_State *L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    int rate = (int)luaL_optinteger(L, 2, 22050);
+    double vol = luaL_optnumber(L, 3, 0.5);
+    size_t n = lua_rawlen(L, 1);
+    if (n > 48000 * 30) return luaL_error(L, "too many samples (at most 30 seconds)");
+    float *buf = malloc((n ? n : 1) * sizeof *buf);
+    if (!buf) return luaL_error(L, "out of memory");
+    for (size_t i = 0; i < n; i++) {
+        lua_rawgeti(L, 1, (lua_Integer)i + 1);
+        buf[i] = (float)lua_tonumber(L, -1);
+        lua_pop(L, 1);
+    }
+    int ok = sound_pcm(buf, n, rate, vol, 0, thread_data()) == 0;
+    free(buf);
+    lua_pushboolean(L, ok);
+    return 1;
+}
+
+static int s_beep(lua_State *L) {
+    sound_tone(880, 90, 0.4, SOUND_SQUARE, 0, thread_data());
+    (void)L;
+    return 0;
+}
+
+static int s_stop(lua_State *L) {
+    (void)L;
+    sound_stop(thread_data());
+    return 0;
+}
+
+static int s_playing(lua_State *L) {
+    lua_pushboolean(L, sound_busy(thread_data()));
+    return 1;
+}
+
+static int s_wait(lua_State *L) {
+    while (sound_busy(thread_data())) {
+        if (check_abort()) return luaL_error(L, "%s", abort_msg());
+        cpu_idle();
+    }
+    return 0;
+}
+
+static const luaL_Reg sound_funcs[] = {
+    {"available", s_available}, {"tone", s_tone}, {"note", s_note}, {"melody", s_melody},
+    {"play", s_play}, {"beep", s_beep}, {"stop", s_stop}, {"playing", s_playing},
+    {"wait", s_wait}, {NULL, NULL}};
+
 /* require(): loads modules from the RAM filesystem. */
 static int l_require(lua_State *L) {
     const char *name = luaL_checkstring(L, 1);
@@ -925,6 +1040,8 @@ static int pmain(lua_State *L) {
     lua_setglobal(L, "tomos");
     luaL_newlib(L, gfx_funcs);
     lua_setglobal(L, "gfx");
+    luaL_newlib(L, sound_funcs);
+    lua_setglobal(L, "sound");
     lua_pushcfunction(L, l_require);
     lua_setglobal(L, "require");
 
@@ -968,6 +1085,9 @@ int lua_run(const char *name, const char *code, size_t len, int interactive, int
         sb_puts(err, msg ? msg : "unknown error");
         rc = -1;
     }
+    /* Sounds may outlive a program that ends normally (a short jingle);
+     * a stopped one is silenced. */
+    if (ctx.abort == ABORT_BREAK || ctx.abort == ABORT_TIMEOUT || thread_killed()) sound_stop(&ctx);
     /* Don't let finalizers of a runaway program run forever either. */
     ctx.deadline = time_ms() + 2000;
     lua_close(L);
