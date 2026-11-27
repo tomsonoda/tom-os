@@ -31,16 +31,12 @@ void kmain(u32 mb_info, u32 magic) {
     }
     if (gui && cmdline_get("layout", v, sizeof v) && v[0] == 'w') wm_set_layout(LAYOUT_WINDOWS);
     if (gui) {
-        /* The shell window grows with the screen: 80x30 at 1024x768. */
-        int cols = 80 + (wm_screen_w() - 1024) / 16, rows = 30 + (wm_screen_h() - 768) / 32;
-        cols = cols < 80 ? 80 : cols > 132 ? 132 : cols;
-        rows = rows < 30 ? 30 : rows > 48 ? 48 : rows;
-        tty *shell = tty_create(cols, rows);
+        tty *shell = tty_create(80, 30); /* resized to fit the screen by wm_set_home */
         if (shell) {
             shell->serial = 1;
-            /* the shell moves from the VGA text screen into a window */
+            /* the shell moves from the VGA text screen into the home screen */
             *console_tty0() = *shell;
-            wm_create("tom-os", console_tty0(), NULL);
+            wm_set_home(wm_create("tom-os", console_tty0(), NULL));
         }
     }
 

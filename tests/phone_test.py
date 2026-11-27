@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Full-screen ("phone") layout test: one app fills the screen, the home bar
-switches apps by dragging, and the overview shows all apps as cards. Drives
+"""Full-screen ("phone") layout test: the shell is the home screen, apps open
+on top of it, the bottom bar goes home or switches apps, and the card view
+shows the running apps. Drives
 QEMU with key presses (monitor) and an absolute pointer (QMP) and checks
 pixels in screenshots."""
 import os
@@ -63,6 +64,10 @@ def main():
             assert time.time() < deadline, "%s is %r, expected %r" % (path, got, expected)
             time.sleep(0.3)
 
+    def nonblack_in(x0, y0, x1, y1):
+        scr.grab()
+        return any(scr.pixel(x, y) not in (BLACK, -1) for x in range(x0, x1) for y in range(y0, y1))
+
     try:
         def boot():
             vm.expect("network up", 90)
@@ -72,16 +77,22 @@ def main():
             vm.command("/info", "graphical (full screen)", "absolute pointer", PROMPT)
             scr.wait_pixel(300, 10, BAR, "status bar")
             scr.wait_pixel(300, H - 5, BAR, "home bar")
-            scr.wait_pixel(5, 400, BLACK, "the shell fills the screen")
-        step("boots full screen with a status bar and a home bar", boot)
+            scr.wait_pixel(5, 400, BLACK, "the home screen fills the screen")
+        step("boots to the home screen (the prompt) with a status bar and a home bar", boot)
+
+        def wide_home():
+            vm.command('/lua tomos.cls() print(string.rep("#", 120))', PROMPT)
+            time.sleep(0.5)
+            assert nonblack_in(119 * 8, STATUS_H, 120 * 8, STATUS_H + 16), "column 120 of the first line"
+        step("the home screen's terminal is as wide as the screen", wide_home)
 
         def run_app():
             vm.command('/lua tomos.write_file("apps/clicker.lua", [[%s]])' % CLICK_APP, PROMPT)
             vm.command("/run clicker", "running", PROMPT)
-            scr.wait_pixel(500, 400, APP_BG, "the app fills the screen")
+            scr.wait_pixel(500, 400, APP_BG, "the app opens over the home screen")
             scr.wait_pixel(5, STATUS_H + 5, 0xFFFFFF, "canvas starts right below the status bar")
             assert cat("size") == "%dx%d" % (W, H - STATUS_H - BAR_H)
-        step("a graphics app takes the whole screen (gfx.mode() without a size)", run_app)
+        step("an app opens full screen on top of the home screen", run_app)
 
         def click():
             ptr.click(300, 200)
@@ -93,26 +104,21 @@ def main():
             scr.wait_pixel(10, STATUS_H + 10, 0xFFFFFF, "button released")
         step("mouse clicks reach the app at the right place, short clicks too", click)
 
-        def swipe():
-            ptr.drag(200, H - 12, 800, H - 12)   # drag right: the app to the left (the shell)
-            scr.wait_pixel(500, 400, BLACK, "shell after swiping right")
-            ptr.drag(800, H - 12, 200, H - 12)   # drag left: back to the app
-            scr.wait_pixel(500, 400, APP_BG, "app after swiping left")
-            ptr.drag(500, H - 12, 560, H - 12)   # too short: stays
-            time.sleep(0.6)
-            scr.wait_pixel(500, 400, APP_BG, "a short drag springs back")
-        step("dragging the home bar sideways switches apps", swipe)
-
-        def keys():
-            mon.keys("alt-left")
-            scr.wait_pixel(500, 400, BLACK, "shell after Alt+Left")
-            mon.keys("alt-right")
-            scr.wait_pixel(500, 400, APP_BG, "app after Alt+Right")
-            ptr.click(20, 10)                    # "<" in the status bar
-            scr.wait_pixel(500, 400, BLACK, "shell after clicking <")
-            ptr.click(W - 20, 10)                # ">"
-            scr.wait_pixel(500, 400, APP_BG, "app after clicking >")
-        step("Alt+arrows and the < > buttons switch apps", keys)
+        def home_and_back():
+            ptr.click(500, H - 12)               # click the home bar: home
+            scr.wait_pixel(600, 400, BLACK, "home screen")
+            vm.command("/ps", "apps/clicker.lua", PROMPT)   # still running
+            ptr.click(500, H - 12)               # at home: the running apps
+            scr.wait_pixel(100, 150, OVERVIEW, "running apps")
+            ptr.click(500, 400)                  # the only card
+            scr.wait_pixel(600, 400, APP_BG, "back in the app")
+            ptr.drag(500, H - 12, 500, H - 200)  # drag the bar up: home
+            scr.wait_pixel(600, 400, BLACK, "home after dragging up")
+            mon.keys("alt-tab")                  # from home: the first app
+            scr.wait_pixel(600, 400, APP_BG, "app after Alt+Tab")
+            mon.keys("alt-h")
+            scr.wait_pixel(600, 400, BLACK, "home after Alt+H")
+        step("the home bar goes home; apps keep running and can be reopened", home_and_back)
 
         def small():
             vm.command('/lua tomos.write_file("apps/small.lua", [[%s]])' % SMALL_APP, PROMPT)
@@ -125,47 +131,56 @@ def main():
             wait_file("small", "100,50")
         step("a small canvas is shown enlarged and clicks are scaled back", small)
 
-        def overview():
-            ptr.click(500, H - 12)               # click the home bar
-            scr.wait_pixel(100, 150, OVERVIEW, "overview background")
-            ptr.click(30, 150)                   # outside the cards: back
-            scr.wait_pixel(30, 400, BLACK, "back to the app (small canvas margin)")
-            mon.keys("alt-up")
-            scr.wait_pixel(100, 150, OVERVIEW, "overview with Alt+Up")
-            mon.keys("esc")
-            scr.wait_pixel(30, 400, BLACK, "Esc leaves the overview")
-        step("clicking the home bar opens the overview of all apps", overview)
+        def swipe():
+            ptr.drag(200, H - 12, 800, H - 12)   # drag right: the app to the left (clicker)
+            scr.wait_pixel(600, 400, APP_BG, "clicker after swiping right")
+            ptr.drag(800, H - 12, 200, H - 12)   # drag left: small again
+            scr.wait_pixel(600, 400, 0x000080, "small after swiping left")
+            ptr.drag(500, H - 12, 560, H - 12)   # too short: stays
+            time.sleep(0.6)
+            scr.wait_pixel(600, 400, 0x000080, "a short drag springs back")
+            mon.keys("alt-left")
+            scr.wait_pixel(600, 400, APP_BG, "clicker after Alt+Left")
+            ptr.click(W - 20, 10)                # ">" in the status bar
+            scr.wait_pixel(600, 400, 0x000080, "small after clicking >")
+        step("dragging the bottom bar sideways, Alt+arrows and < > switch apps", swipe)
 
-        def open_card():
-            ptr.click(500, H - 12)
-            scr.wait_pixel(100, 150, OVERVIEW, "overview")
-            # the current app (3rd) is in the middle; the shell card is two to the left
-            ptr.drag(100, 400, 1000, 400, steps=10)  # two cards' width to the right
+        def overview():
+            mon.keys("alt-up")
+            scr.wait_pixel(100, 150, OVERVIEW, "running apps with Alt+Up")
+            mon.keys("esc")
+            scr.wait_pixel(5, 400, BLACK, "Esc goes back to the app (its left margin)")
+            scr.wait_pixel(600, 400, 0x000080, "the app again")
+            ptr.click(W // 2, 10)                # the title in the status bar
+            scr.wait_pixel(100, 150, OVERVIEW, "running apps from the status bar")
+            ptr.drag(100, 400, 1000, 400, steps=10)   # one card to the right: clicker in the middle
             time.sleep(0.3)
             ptr.click(500, 400)
-            scr.wait_pixel(600, 400, BLACK, "shell opened from its card")
-            scr.wait_pixel(5, 400, BLACK, "full screen again")
-        step("dragging the cards and clicking one opens that app", open_card)
+            scr.wait_pixel(600, 400, APP_BG, "clicker opened from its card")
+        step("the card view shows the running apps and opens one", overview)
 
-        def close_card():
-            vm.command("/ps", "apps/clicker.lua", "apps/small.lua", PROMPT)
-            ptr.click(500, H - 12)
-            scr.wait_pixel(100, 150, OVERVIEW, "overview")
-            ptr.drag(500 + (W * 5 // 12 + 28), 400, 500 + (W * 5 // 12 + 28), 120, steps=10)  # flick the clicker up
-            time.sleep(0.8)
-            mon.keys("esc")
+        def close():
+            mon.keys("alt-q")                    # close the current app: back home
+            scr.wait_pixel(600, 400, BLACK, "home after closing the app")
             vm.command("/ps", "apps/small.lua", PROMPT)
             assert "clicker" not in vm.out.rsplit("/ps", 1)[1], "clicker should be closed"
-            mon.keys("alt-q")                    # the shell is not closable; nothing happens
+            ptr.click(500, H - 12)
+            scr.wait_pixel(100, 150, OVERVIEW, "running apps")
+            ptr.drag(500, 400, 500, 120, steps=10)   # flick the only card up
+            time.sleep(0.8)
+            vm.command("/ps", "(no apps are running)", PROMPT)
+            scr.wait_pixel(600, 400, BLACK, "home once no app is left")
+            mon.keys("alt-q")                    # home cannot be closed
             time.sleep(0.3)
-            vm.command("/ps", "apps/small.lua", PROMPT)
-        step("flicking a card up closes that app", close_card)
+            vm.command("/ps", "(no apps are running)", PROMPT)
+        step("closing an app returns home; flicking a card up closes it", close)
 
         def layout():
             vm.command("/layout windows", PROMPT)
             scr.wait_pixel(1000, 600, 0x1F4E5F, "windows desktop")
             vm.command("/layout full", PROMPT)
             scr.wait_pixel(300, H - 5, BAR, "home bar again")
+            scr.wait_pixel(5, 400, BLACK, "home fills the screen again")
             vm.command("/layout", "layout: full", PROMPT)
         step("/layout switches between full screen and windows", layout)
 
@@ -175,6 +190,8 @@ def main():
         step("powers off", halt)
     except Exception as e:
         print("FAILED at step %d: %s" % (steps + 1, e))
+        if os.environ.get("TOMOS_DEBUG"):
+            print(vm.raw.decode("utf-8", "replace")[-3000:])
         try:
             scr.grab()
             print("last screenshot: " + scr.path)

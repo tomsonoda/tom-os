@@ -48,7 +48,7 @@ typedef struct term {
     int cx, cy;
     u8 attr;
     int esc_state, esc_args[4], esc_n, esc_private;
-    u32 dirty; /* one bit per row that needs redrawing (windows only) */
+    u64 dirty; /* one bit per row that needs redrawing (windows only; up to 64 rows) */
     int hw;    /* backed by the VGA text screen */
 } term;
 
@@ -66,6 +66,7 @@ typedef struct tty {
 void console_init(void);
 tty *console_tty0(void);              /* the shell's tty (serial + first screen) */
 tty *tty_create(int cols, int rows);  /* tty with its own terminal buffer */
+void term_resize(term *t, int cols, int rows); /* keeps the lines around the cursor */
 void tty_destroy(tty *t);
 void tty_input(tty *t, const char *bytes); /* deliver typed characters */
 void console_poll_input(void);        /* drain serial / keyboard / mouse */
@@ -176,6 +177,7 @@ void wm_mouse_abs(int x, int y, int buttons);        /* absolute pointer, 0..655
 /* Layouts: full screen (one app at a time, like a phone) or overlapping windows. */
 enum { LAYOUT_FULL, LAYOUT_WINDOWS };
 void wm_set_layout(int layout);
+void wm_set_home(window *w); /* the shell: the home screen apps open on top of */
 int wm_layout(void);
 void wm_canvas_max(int *w, int *h); /* largest canvas an app can use */
 int wm_screen_w(void);

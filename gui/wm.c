@@ -1,10 +1,10 @@
 /* Window manager and compositor.
  *
  * Two layouts:
- * - Full screen (default): one app fills the screen, like a phone. A status
- *   bar at the top and a home bar at the bottom. Drag the home bar sideways
- *   to switch to the neighbouring app; click it (or drag it up) for an
- *   overview of all apps as cards.
+ * - Full screen (default), like a phone: the home screen is the shell (the
+ *   prompt). Apps open on top of it, one at a time, filling the screen.
+ *   Click or drag up the bar at the bottom to go home; drag it sideways to
+ *   switch between running apps; the card view shows all running apps.
  * - Windows: overlapping windows with title bars, dragged with the mouse.
  *
  * The compositor draws into a shadow buffer at 1/scale of the display size
@@ -70,20 +70,25 @@ static int last_minute = -1;
 static window *drag;
 static int drag_dx, drag_dy;
 
-/* full-screen layout: sliding between apps */
+/* full-screen layout */
+static window *home;         /* the shell; apps open on top of it */
 static int gesture;          /* home bar is being dragged */
 static int press_x, press_y; /* where the left button went down */
-static int slide_off;        /* horizontal offset of the current app */
+static int slide_off;        /* horizontal offset while switching apps */
 static int anim, anim_target;
 static window *anim_next;    /* focused once the animation reaches its target */
+static int vanim, voff, vtarget; /* vertical: an app sliding up (opening) or down (to home) */
+static window *vtop, *vbehind, *vnext;
 
-/* full-screen layout: overview of all apps */
+/* full-screen layout: the card view of running apps */
 static int overview;
-static int ov_sel;           /* index into order[] of the card in the middle */
+static int ov_sel;           /* index (among apps) of the card in the middle */
 static int ov_scroll;        /* extra horizontal offset while dragging the row */
 static int ov_lift;          /* how far the pressed card has been dragged up */
 static int ov_press_card;    /* card under the pointer when the button went down */
 static int ov_dragging;
+static window *ov_return;    /* where Esc goes back to */
+static int ov_pressed;       /* the button went down inside the card view */
 
 int wm_active(void) { return active; }
 int wm_screen_w(void) { return shadow.w; }
@@ -125,15 +130,36 @@ static void damage_all(void) { damage(0, 0, shadow.w, shadow.h); }
 
 static window *focused(void) { return nwin ? zorder[nwin - 1] : NULL; }
 
-static int order_index(const window *w) {
+/* Running apps (everything but the home screen), in the order they started. */
+static int running_apps(window **out) {
+    int n = 0;
     for (int i = 0; i < nwin; i++)
-        if (order[i] == w) return i;
+        if (order[i] != home) out[n++] = order[i];
+    return n;
+}
+
+static int app_index(const window *w) {
+    window *a[MAX_WINDOWS];
+    int n = running_apps(a);
+    for (int i = 0; i < n; i++)
+        if (a[i] == w) return i;
     return -1;
 }
 
+static window *app_at(int i) {
+    window *a[MAX_WINDOWS];
+    int n = running_apps(a);
+    return i >= 0 && i < n ? a[i] : NULL;
+}
+
+static int app_count(void) {
+    window *a[MAX_WINDOWS];
+    return running_apps(a);
+}
+
 static window *neighbour(const window *w, int dir) {
-    int i = order_index(w) + dir;
-    return i >= 0 && i < nwin ? order[i] : NULL;
+    if (w == home) return NULL;
+    return app_at(app_index(w) + dir);
 }
 
 /* Where a window's content appears on screen, and how much it is enlarged. */
@@ -155,7 +181,7 @@ static void view_rect(const window *w, int *x, int *y, int *vw, int *vh, int *k)
     *y = area_y() + (area_h() - *vh) / 2;
 }
 
-static int sliding(void) { return gesture || anim || slide_off; }
+static int sliding(void) { return gesture || anim || slide_off || vanim; }
 
 /* A part of a window's content changed (window coordinates). */
 static void damage_content(const window *w, int x, int y, int ww, int hh) {
@@ -185,7 +211,7 @@ static void lose_focus(window *w) {
     memset(w->keys, 0, sizeof w->keys); /* keys do not stay held across a focus change */
     w->mb = 0;
     damage_window(w);
-    if (!w->canvas) w->tty->term->dirty = ~0u;
+    if (!w->canvas) w->tty->term->dirty = ~0ULL;
 }
 
 static void raise_window(window *w) {
@@ -197,7 +223,7 @@ static void raise_window(window *w) {
     zorder[nwin - 1] = w;
     if (old && old != w) lose_focus(old);
     damage_window(w);
-    if (!w->canvas) w->tty->term->dirty = ~0u;
+    if (!w->canvas) w->tty->term->dirty = ~0ULL;
 }
 
 static u32 *alloc_pixels(int w, int h) { return calloc((size_t)w * (size_t)h, 4); }
@@ -212,13 +238,51 @@ static void start_anim(int from, int to, window *next) {
     damage_all();
 }
 
+/* Slides `top` vertically from `from` to `to` over `behind`; `next` gets the
+ * focus at the end. */
+static void start_vanim(window *top, window *behind, int from, int to, window *next) {
+    vtop = top;
+    vbehind = behind;
+    voff = from;
+    vtarget = to;
+    vnext = next;
+    vanim = 1;
+    damage_all();
+}
+
+/* A new action finishes any animation still running, so it starts from
+ * the state the user is about to see. */
+static void finish_anims(void) {
+    if (anim) {
+        anim = 0;
+        slide_off = 0;
+        if (anim_next) raise_window(anim_next);
+        anim_next = NULL;
+    }
+    if (vanim) {
+        vanim = 0;
+        if (vnext) raise_window(vnext);
+        vnext = NULL;
+    }
+}
+
 /* Full-screen layout: show the app to the left (-1) or right (+1). */
 static void switch_app(int dir) {
+    finish_anims();
     window *cur = focused();
-    if (!cur) return;
+    if (!cur || cur == home) return;
     window *n = neighbour(cur, dir);
     if (n) start_anim(slide_off, -dir * shadow.w, n);
     else start_anim(-dir * 40, 0, NULL); /* nothing there: a small bounce */
+}
+
+/* Full-screen layout: the current app slides down, revealing the home screen. */
+static void go_home(void) {
+    finish_anims();
+    window *f = focused();
+    gesture = anim = slide_off = 0;
+    if (!home || f == home || !f) return;
+    start_vanim(f, home, 0, area_h(), home);
 }
 
 window *wm_create(const char *title, tty *t, thread *owner) {
@@ -239,7 +303,7 @@ window *wm_create(const char *title, tty *t, thread *owner) {
     w->tty = t;
     w->owner = owner;
     snprintf(w->title, sizeof w->title, "%s", title);
-    t->term->dirty = ~0u;
+    t->term->dirty = ~0ULL;
     window *old = focused();
     zorder[nwin] = w;
     order[nwin] = w;
@@ -248,34 +312,43 @@ window *wm_create(const char *title, tty *t, thread *owner) {
     damage_window(w);
     if (layout == LAYOUT_FULL && old) {
         overview = 0;
-        start_anim(shadow.w, 0, NULL); /* slide in from the right */
+        gesture = anim = slide_off = 0;
+        start_vanim(w, old, area_h(), 0, NULL); /* opens over what was shown */
     }
     return w;
 }
 
 void wm_destroy(window *w) {
     if (!w || !w->used) return;
+    int was_focused = w == focused();
     damage_window(w);
     int i = 0;
     while (i < nwin && zorder[i] != w) i++;
     for (; i < nwin - 1; i++) zorder[i] = zorder[i + 1];
-    i = order_index(w);
+    i = 0;
+    while (i < nwin && order[i] != w) i++;
     for (; i < nwin - 1; i++) order[i] = order[i + 1];
     nwin--;
     if (drag == w) drag = NULL;
     if (anim_next == w) anim_next = NULL;
+    if (vtop == w || vbehind == w || vnext == w) vanim = 0;
+    if (ov_return == w) ov_return = NULL;
+    if (home == w) home = NULL;
     free(w->front);
     free(w->back);
     w->used = 0;
     if (layout == LAYOUT_FULL) {
         gesture = anim = slide_off = 0;
-        if (ov_sel >= nwin) ov_sel = nwin - 1;
+        int n = app_count();
+        if (ov_sel >= n) ov_sel = n - 1;
+        if (overview && n == 0) overview = 0;
+        if (was_focused && home) raise_window(home); /* a closed app returns to home */
         damage_all();
     }
     window *f = focused();
     if (f) {
         damage_window(f);
-        if (!f->canvas) f->tty->term->dirty = ~0u;
+        if (!f->canvas) f->tty->term->dirty = ~0ULL;
     }
 }
 
@@ -306,7 +379,7 @@ int wm_set_canvas(window *w, int width, int height) { return resize(w, width, he
 
 void wm_set_text(window *w) {
     term *t = w->tty->term;
-    if (resize(w, t->cols * CELL_W, t->rows * CELL_H, 0) == 0) t->dirty = ~0u;
+    if (resize(w, t->cols * CELL_W, t->rows * CELL_H, 0) == 0) t->dirty = ~0ULL;
 }
 
 void wm_present(window *w) {
@@ -324,14 +397,14 @@ void wm_set_title(window *w, const char *title) {
 /* Redraws the rows of a terminal window that changed. */
 static void render_term(window *w) {
     term *t = w->tty->term;
-    u32 dirty = t->dirty;
+    u64 dirty = t->dirty;
     if (!dirty) return;
     t->dirty = 0;
     surface s;
     surface_init(&s, w->front, w->w, w->h);
     int show_cursor = w == focused();
-    for (int row = 0; row < t->rows && row < 32; row++) {
-        if (!(dirty & (1u << row))) continue;
+    for (int row = 0; row < t->rows && row < 64; row++) {
+        if (!(dirty & (1ULL << row))) continue;
         for (int col = 0; col < t->cols; col++) {
             u16 cell = t->cells[row * t->cols + col];
             u8 attr = (u8)(cell >> 8);
@@ -381,27 +454,37 @@ static void compose_windows(void) {
 }
 
 /* --------------------------------------------------- full-screen layout */
-/* Draws an app filling the content area, moved sideways by `shift`. */
-static void draw_app(const window *w, int shift) {
+/* Draws an app filling the content area, moved by (sx, sy). */
+static void draw_app(const window *w, int sx, int sy) {
     int vx, vy, vw, vh, k;
     view_rect(w, &vx, &vy, &vw, &vh, &k);
-    gfx_fill(&shadow, shift, area_y(), shadow.w, area_h(), COL_APP_BG);
-    if (k == 1) gfx_blit(&shadow, vx + shift, vy, w->front, w->w, w->h);
-    else gfx_blit_resize(&shadow, vx + shift, vy, vw, vh, w->front, w->w, w->h);
+    /* never paint over the status bar or the home bar */
+    int cy0 = shadow.cy0, cy1 = shadow.cy1;
+    if (shadow.cy0 < area_y()) shadow.cy0 = area_y();
+    if (shadow.cy1 > area_y() + area_h()) shadow.cy1 = area_y() + area_h();
+    gfx_fill(&shadow, sx, area_y() + sy, shadow.w, area_h(), COL_APP_BG);
+    if (k == 1) gfx_blit(&shadow, vx + sx, vy + sy, w->front, w->w, w->h);
+    else gfx_blit_resize(&shadow, vx + sx, vy + sy, vw, vh, w->front, w->w, w->h);
+    shadow.cy0 = cy0;
+    shadow.cy1 = cy1;
 }
 
 static void draw_status_bar(void) {
     window *f = focused();
     char buf[96];
+    int napps = app_count();
     gfx_fill(&shadow, 0, 0, shadow.w, STATUS_H, COL_BAR);
     if (!f) return;
-    int i = order_index(f);
-    if (overview) snprintf(buf, sizeof buf, "All apps (%d)", nwin);
-    else snprintf(buf, sizeof buf, "%s   %d/%d", f->title, i + 1, nwin);
+    if (overview) snprintf(buf, sizeof buf, "Running apps (%d)", napps);
+    else if (f == home) snprintf(buf, sizeof buf, "tom-os");
+    else snprintf(buf, sizeof buf, "%s   %d/%d", f->title, app_index(f) + 1, napps);
     text_at((shadow.w - (int)strlen(buf) * CELL_W) / 2, 4, buf, COL_BAR_TEXT);
-    if (!overview) {
-        text_at(14, 4, "<", i > 0 ? COL_BAR_TEXT : COL_BAR_DIM);
-        text_at(shadow.w - 22, 4, ">", i < nwin - 1 ? COL_BAR_TEXT : COL_BAR_DIM);
+    if (!overview && f != home) {
+        text_at(14, 4, "<", neighbour(f, -1) ? COL_BAR_TEXT : COL_BAR_DIM);
+        text_at(shadow.w - 22, 4, ">", neighbour(f, +1) ? COL_BAR_TEXT : COL_BAR_DIM);
+    } else if (!overview && napps) {
+        snprintf(buf, sizeof buf, "%d app%s running", napps, napps == 1 ? "" : "s");
+        text_at(8, 4, buf, COL_BAR_DIM);
     }
     u64 t = rtc_unix_time();
     snprintf(buf, sizeof buf, "%02d:%02d", (int)(t / 3600 % 24), (int)(t / 60 % 60));
@@ -410,14 +493,20 @@ static void draw_status_bar(void) {
 
 static void draw_home_bar(void) {
     int y = shadow.h - BAR_H;
+    window *f = focused();
+    window *a[MAX_WINDOWS];
+    int n = running_apps(a);
     gfx_fill(&shadow, 0, y, shadow.w, BAR_H, COL_BAR);
-    /* one dot per app, the current one bright */
-    int dots_x = shadow.w / 2 - nwin * 6;
-    for (int i = 0; i < nwin; i++)
-        gfx_circle(&shadow, dots_x + i * 12 + 6, y + 8, 3, order[i] == focused() ? COL_PILL : COL_BAR_DIM, 1);
+    /* one dot per running app, the current one bright */
+    int dots_x = shadow.w / 2 - n * 6;
+    for (int i = 0; i < n; i++)
+        gfx_circle(&shadow, dots_x + i * 12 + 6, y + 8, 3, a[i] == f ? COL_PILL : COL_BAR_DIM, 1);
     gfx_fill(&shadow, shadow.w / 2 - 60, y + 17, 120, 5, COL_PILL);
-    const char *hint = overview ? "click an app to open it - drag it up or click x to close it - Esc: back"
-                                : "drag this bar sideways: switch apps - click it: all apps";
+    const char *hint;
+    if (overview) hint = "click an app to open it - drag it up or click x to close it - Esc: back";
+    else if (f != home) hint = "click or drag up: home - drag sideways: other apps";
+    else if (n) hint = "click or drag up: running apps";
+    else hint = "type what you want - apps open here";
     text_at(8, y + 6, shadow.w >= 1000 ? hint : "", COL_BAR_DIM);
 }
 
@@ -437,7 +526,8 @@ static int card_x(int i) {
 static int card_at(int x, int y) {
     int cw, ch, gap, cy;
     card_geometry(&cw, &ch, &gap, &cy);
-    for (int i = 0; i < nwin; i++) {
+    int n = app_count();
+    for (int i = 0; i < n; i++) {
         int cx = card_x(i);
         if (x >= cx && x < cx + cw && y >= cy - 22 && y < cy + ch) return i;
     }
@@ -448,15 +538,18 @@ static int on_close_box(int i, int x, int y) {
     int cw, ch, gap, cy;
     card_geometry(&cw, &ch, &gap, &cy);
     int cx = card_x(i);
-    return order[i]->owner && x >= cx + cw - 20 && x < cx + cw && y >= cy - 22 && y < cy - 2;
+    window *w = app_at(i);
+    return w && w->owner && x >= cx + cw - 20 && x < cx + cw && y >= cy - 22 && y < cy - 2;
 }
 
 static void draw_overview(void) {
     int cw, ch, gap, cy;
     card_geometry(&cw, &ch, &gap, &cy);
+    window *a[MAX_WINDOWS];
+    int n = running_apps(a);
     gfx_fill(&shadow, 0, area_y(), shadow.w, area_h(), COL_OVERVIEW);
-    for (int i = 0; i < nwin; i++) {
-        window *w = order[i];
+    for (int i = 0; i < n; i++) {
+        window *w = a[i];
         int cx = card_x(i), y = cy + (i == ov_press_card && ov_lift < 0 ? ov_lift : 0);
         if (cx + cw < 0 || cx > shadow.w) continue;
         size_t max_chars = (size_t)(cw - 24) / CELL_W, len = strlen(w->title);
@@ -465,7 +558,7 @@ static void draw_overview(void) {
             gfx_fill(&shadow, cx + cw - 18, y - 20, 16, 16, COL_CLOSE);
             gfx_glyph(&shadow, cx + cw - 14, y - 20, 'x', COL_TITLE_TEXT, -1, 1);
         }
-        gfx_fill(&shadow, cx - 2, y - 2, cw + 4, ch + 4, w == focused() ? COL_PILL : COL_BAR_DIM);
+        gfx_fill(&shadow, cx - 2, y - 2, cw + 4, ch + 4, w == ov_return ? COL_PILL : COL_BAR_DIM);
         gfx_fill(&shadow, cx, y, cw, ch, COL_APP_BG);
         /* the app as it looks full screen, shrunk into the card */
         int vx, vy, vw, vh, k;
@@ -480,11 +573,14 @@ static void compose_full(void) {
     window *f = focused();
     if (overview) {
         draw_overview();
+    } else if (vanim) {
+        if (vbehind) draw_app(vbehind, 0, 0);
+        if (vtop) draw_app(vtop, 0, voff);
     } else if (f) {
         int off = slide_off;
-        draw_app(f, off);
+        draw_app(f, off, 0);
         window *n = off < 0 ? neighbour(f, +1) : off > 0 ? neighbour(f, -1) : NULL;
-        if (n) draw_app(n, off < 0 ? off + shadow.w : off - shadow.w);
+        if (n) draw_app(n, off < 0 ? off + shadow.w : off - shadow.w, 0);
         else if (off) gfx_fill(&shadow, off < 0 ? shadow.w + off : 0, area_y(), off < 0 ? -off : off,
                                area_h(), COL_OVERVIEW);
     }
@@ -525,12 +621,20 @@ static void compose(void) {
     }
 }
 
-static void step_anim(void) {
-    if (!anim) return;
-    int diff = anim_target - slide_off;
-    int step = diff / 4;
+static int approach(int *v, int target) {
+    int diff = target - *v, step = diff / 4;
     if (step > -12 && step < 12) step = diff > 0 ? 12 : -12;
-    if ((diff > 0 && step >= diff) || (diff < 0 && step <= diff) || diff == 0) {
+    if (diff == 0 || (diff > 0 && step >= diff) || (diff < 0 && step <= diff)) {
+        *v = target;
+        return 1; /* arrived */
+    }
+    *v += step;
+    return 0;
+}
+
+static void step_anim(void) {
+    if (!anim && !vanim) return;
+    if (anim && approach(&slide_off, anim_target)) {
         anim = 0;
         slide_off = 0;
         if (anim_next) {
@@ -538,12 +642,16 @@ static void step_anim(void) {
             anim_next = NULL;
             raise_window(n);
         }
-    } else {
-        slide_off += step;
     }
-    damage(0, area_y(), shadow.w, area_h());
-    damage(0, 0, shadow.w, STATUS_H);
-    damage(0, shadow.h - BAR_H, shadow.w, BAR_H);
+    if (vanim && approach(&voff, vtarget)) {
+        vanim = 0;
+        if (vnext) {
+            window *n = vnext;
+            vnext = NULL;
+            raise_window(n);
+        }
+    }
+    damage_all();
 }
 
 void wm_tick(void) {
@@ -578,13 +686,19 @@ static void move_window(window *w, int nx, int ny) {
 }
 
 static void enter_overview(void) {
+    finish_anims();
+    window *f = focused();
+    int n = app_count();
+    if (!n) return; /* nothing is running */
     overview = 1;
-    gesture = anim = slide_off = 0;
-    anim_next = NULL;
-    ov_sel = order_index(focused());
+    gesture = anim = slide_off = vanim = 0;
+    anim_next = vnext = NULL;
+    ov_return = f;
+    ov_sel = f == home ? n - 1 : app_index(f);
     ov_scroll = ov_lift = 0;
     ov_press_card = -1;
     ov_dragging = 0;
+    ov_pressed = 0; /* the release of the click that opened the view is not a click in it */
     damage_all();
 }
 
@@ -592,17 +706,45 @@ static void leave_overview(window *open) {
     overview = 0;
     ov_scroll = ov_lift = 0;
     ov_press_card = -1;
-    if (open) raise_window(open);
+    window *target = open ? open : ov_return ? ov_return : home;
+    if (target) raise_window(target);
     damage_all();
+}
+
+/* The home screen's terminal fills the screen in full-screen layout. */
+static void fit_home(void) {
+    if (!home) return;
+    term *t = home->tty->term;
+    int cols, rows;
+    if (layout == LAYOUT_FULL) {
+        cols = shadow.w / CELL_W;
+        rows = area_h() / CELL_H;
+    } else {
+        cols = 80 + (shadow.w - 1024) / 16;
+        rows = 30 + (shadow.h - 768) / 32;
+        cols = cols < 80 ? 80 : cols;
+        rows = rows < 30 ? 30 : rows;
+    }
+    if (cols > 200) cols = 200;
+    if (rows > 64) rows = 64;
+    if (cols == t->cols && rows == t->rows && home->w == cols * CELL_W) return;
+    term_resize(t, cols, rows);
+    wm_set_text(home);
+}
+
+void wm_set_home(window *w) {
+    home = w;
+    fit_home();
 }
 
 void wm_set_layout(int l) {
     if (!active || l == layout) return;
     layout = l;
-    overview = gesture = anim = slide_off = 0;
+    overview = gesture = anim = slide_off = vanim = 0;
     drag = NULL;
+    fit_home();
     for (int i = 0; i < nwin; i++) {
-        if (!zorder[i]->canvas) zorder[i]->tty->term->dirty = ~0u;
+        if (!zorder[i]->canvas) zorder[i]->tty->term->dirty = ~0ULL;
         if (layout == LAYOUT_WINDOWS) move_window(zorder[i], zorder[i]->x, zorder[i]->y);
     }
     damage_all();
@@ -614,30 +756,40 @@ void wm_key(int code, int down, int alt, const char *chars) {
     if (!w) return;
     if (layout == LAYOUT_FULL && overview) {
         if (!down) return;
+        int n = app_count();
         if (code == 0x01 || (alt && (code == 0xC8 || code == 0xD0))) leave_overview(NULL); /* Esc */
+        else if (alt && code == 0x23) leave_overview(home);                                   /* Alt+H */
         else if (code == 0xCB && ov_sel > 0) ov_sel--;
-        else if (code == 0xCD && ov_sel < nwin - 1) ov_sel++;
-        else if (code == 0x1C || code == 0x9C) leave_overview(order[ov_sel]); /* Enter */
-        else if (alt && code == 0x10 && order[ov_sel]->owner) thread_kill(order[ov_sel]->owner);
+        else if (code == 0xCD && ov_sel < n - 1) ov_sel++;
+        else if (code == 0x1C || code == 0x9C) leave_overview(app_at(ov_sel)); /* Enter */
+        else if (alt && code == 0x10 && app_at(ov_sel) && app_at(ov_sel)->owner)
+            thread_kill(app_at(ov_sel)->owner);
         damage_all();
         return;
     }
-    if (alt && down) {
+    if (alt && down && layout == LAYOUT_FULL) {
         switch (code) {
-        case 0x0F: /* Tab: the next window */
-            if (nwin > 1) {
-                if (layout == LAYOUT_WINDOWS) raise_window(zorder[0]);
-                else if (neighbour(w, +1)) switch_app(+1);
-                else raise_window(order[0]);
-            }
+        case 0x0F: /* Tab: next app, round */
+            if (w == home) { if (app_count()) raise_window(app_at(0)); }
+            else if (neighbour(w, +1)) switch_app(+1);
+            else if (app_count() > 1) raise_window(app_at(0));
             return;
-        case 0x10: /* Q */
-            if (w->owner) thread_kill(w->owner);
-            return;
-        case 0xCB: if (layout == LAYOUT_FULL) switch_app(-1); else move_window(w, w->x - 24, w->y); return;
-        case 0xCD: if (layout == LAYOUT_FULL) switch_app(+1); else move_window(w, w->x + 24, w->y); return;
-        case 0xC8: if (layout == LAYOUT_FULL) enter_overview(); else move_window(w, w->x, w->y - 24); return;
-        case 0xD0: if (layout == LAYOUT_WINDOWS) move_window(w, w->x, w->y + 24); return;
+        case 0x10: if (w->owner) thread_kill(w->owner); return;  /* Q: close */
+        case 0x23: go_home(); return;                            /* H: home */
+        case 0xD0: go_home(); return;                            /* Down: home */
+        case 0xC8: enter_overview(); return;                     /* Up: running apps */
+        case 0xCB: switch_app(-1); return;
+        case 0xCD: switch_app(+1); return;
+        }
+    }
+    if (alt && down && layout == LAYOUT_WINDOWS) {
+        switch (code) {
+        case 0x0F: if (nwin > 1) raise_window(zorder[0]); return; /* Tab: next window */
+        case 0x10: if (w->owner) thread_kill(w->owner); return;
+        case 0xCB: move_window(w, w->x - 24, w->y); return;
+        case 0xCD: move_window(w, w->x + 24, w->y); return;
+        case 0xC8: move_window(w, w->x, w->y - 24); return;
+        case 0xD0: move_window(w, w->x, w->y + 24); return;
         }
     }
     w->keys[code & 0xFF] = (u8)down;
@@ -686,37 +838,44 @@ static void pointer_overview(int buttons, int pressed, int released) {
     int cw, ch, gap, cy;
     card_geometry(&cw, &ch, &gap, &cy);
     if (pressed & 1) {
+        ov_pressed = 1;
         press_x = mouse_x;
         press_y = mouse_y;
         ov_press_card = card_at(mouse_x, mouse_y);
         ov_dragging = 0;
         ov_lift = 0;
+        if (mouse_y >= shadow.h - BAR_H) ov_press_card = -2; /* the home bar: go home */
         return;
     }
     if (buttons & 1) {
         int dx = mouse_x - press_x, dy = mouse_y - press_y;
         if (!ov_dragging && (dx > 6 || dx < -6 || dy > 6 || dy < -6)) ov_dragging = 1;
-        if (ov_dragging) {
+        if (ov_dragging && ov_press_card != -2) {
             if (ov_press_card >= 0 && dy < 0 && -dy > (dx < 0 ? -dx : dx)) ov_lift = dy;
             else ov_scroll = dx;
             damage(0, area_y(), shadow.w, area_h());
         }
         return;
     }
-    if (!(released & 1)) return;
+    if (!(released & 1) || !ov_pressed) return;
+    ov_pressed = 0;
     int card = ov_press_card;
     ov_press_card = -1;
-    if (ov_lift < -ch / 3 && card >= 0 && order[card]->owner) {
-        thread_kill(order[card]->owner); /* flicked up: close it */
+    window *w = card >= 0 ? app_at(card) : NULL;
+    if (card == -2) {
+        leave_overview(home);
+    } else if (ov_lift < -ch / 3 && w && w->owner) {
+        thread_kill(w->owner); /* flicked up: close it */
     } else if (ov_dragging) {
         int moved = -(ov_scroll + (ov_scroll > 0 ? (cw + gap) / 2 : -(cw + gap) / 2)) / (cw + gap);
+        int n = app_count();
         ov_sel += moved;
+        if (ov_sel > n - 1) ov_sel = n - 1;
         if (ov_sel < 0) ov_sel = 0;
-        if (ov_sel > nwin - 1) ov_sel = nwin - 1;
-    } else if (card >= 0 && on_close_box(card, mouse_x, mouse_y)) {
-        thread_kill(order[card]->owner);
-    } else if (card >= 0) {
-        leave_overview(order[card]);
+    } else if (w && on_close_box(card, mouse_x, mouse_y)) {
+        thread_kill(w->owner);
+    } else if (w) {
+        leave_overview(w);
     } else {
         leave_overview(NULL);
     }
@@ -730,6 +889,8 @@ static void pointer_full(int buttons, int pressed, int released) {
         pointer_overview(buttons, pressed, released);
         return;
     }
+    if (pressed & 1) finish_anims();
+    window *f = focused();
     if (pressed & 1) {
         press_x = mouse_x;
         press_y = mouse_y;
@@ -739,29 +900,37 @@ static void pointer_full(int buttons, int pressed, int released) {
             return;
         }
         if (mouse_y < STATUS_H) {
-            if (mouse_x < ARROW_W) switch_app(-1);
+            if (f == home) enter_overview();
+            else if (mouse_x < ARROW_W) switch_app(-1);
             else if (mouse_x >= shadow.w - ARROW_W) switch_app(+1);
             else enter_overview();
             return;
         }
     }
     if (gesture) {
-        window *f = focused();
         int dx = mouse_x - press_x, up = press_y - mouse_y;
+        int at_home = f == home;
         if (buttons & 1) {
-            if (up > 40 && up > (dx < 0 ? -dx : dx)) {
-                enter_overview(); /* dragged up */
+            if (up > 40 && up > (dx < 0 ? -dx : dx)) { /* dragged up */
+                gesture = 0;
+                slide_off = 0;
+                if (at_home) enter_overview();
+                else go_home();
                 return;
             }
-            /* follow the pointer; resist where there is no app */
-            slide_off = (dx < 0 ? neighbour(f, +1) : neighbour(f, -1)) ? dx : dx / 6;
-            damage_all();
+            if (!at_home) { /* follow the pointer; resist where there is no app */
+                slide_off = (dx < 0 ? neighbour(f, +1) : neighbour(f, -1)) ? dx : dx / 6;
+                damage_all();
+            }
             return;
         }
         gesture = 0;
-        if (dx > -5 && dx < 5 && up < 5) {
+        if (dx > -5 && dx < 5 && up < 5) { /* a click */
             slide_off = 0;
-            enter_overview(); /* a click */
+            if (at_home) enter_overview();
+            else go_home();
+        } else if (at_home) {
+            slide_off = 0;
         } else if ((dx < -shadow.w / 5 && neighbour(f, +1)) || (dx > shadow.w / 5 && neighbour(f, -1))) {
             start_anim(slide_off, dx < 0 ? -shadow.w : shadow.w, neighbour(f, dx < 0 ? +1 : -1));
         } else {
@@ -846,7 +1015,8 @@ int wm_set_display(int w, int h, int sc, strbuf *err) {
     if (mouse_x >= shadow.w) mouse_x = shadow.w - 1;
     if (mouse_y >= shadow.h) mouse_y = shadow.h - 1;
     drag = NULL;
-    overview = gesture = anim = slide_off = 0;
+    overview = gesture = anim = slide_off = vanim = 0;
+    fit_home();
     dx0 = dy0 = dx1 = dy1 = 0;
     damage_all();
     return 0;

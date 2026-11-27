@@ -25,7 +25,7 @@ First milestone. Runs on x86-64 under QEMU.
 | Boot in QEMU and talk to the agent | Android devices / aarch64 |
 | The LLM writes, checks and launches Lua apps | Local inference inside the OS (the LLM is reached over HTTP) |
 | Serial and VGA text consoles | Non-ASCII text on screen (only ASCII glyphs) |
-| Graphical desktop: full-screen apps with swipe switching, or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
+| Graphical desktop: a home screen with the prompt and full-screen apps on top (switched by dragging the bottom bar), or overlapping windows; mouse; apps that draw pixels | Sound, GPU acceleration, touch gestures from a trackpad |
 | Screen size and 2x/3x/4x scaling, at boot or with `/display` | Following the host window size automatically (QEMU scales the picture instead) |
 | Several apps running at once | Process isolation between apps |
 | Booting from an ISO (BIOS) | UEFI boot, installing to disk |
@@ -132,11 +132,12 @@ On macOS, `make run-gui` also starts QEMU with `-display cocoa,zoom-to-fit=on`, 
 
 Graphical mode has two layouts. Switch with `/layout full` and `/layout windows`, or boot with `layout=windows`.
 
-**Full screen (default)**: one app at a time fills the screen, like on a phone. The shell is the first app; every app you start opens to its right.
+**Full screen (default)**, like a phone. The home screen is the prompt: the shell fills the screen, and you type what you want there. Apps open on top of it, one at a time, filling the screen.
 
-- Drag the bar at the bottom of the screen sideways to switch to the app on the left or right. A short drag springs back.
-- Click the bottom bar (or drag it up, or press `Alt+Up`) to see all apps as cards. Drag the row of cards sideways, click a card to open that app, and drag a card up or click its `x` to close it. `Esc` goes back.
-- The `<` and `>` at the top left and right also switch apps, and so do `Alt+Left` and `Alt+Right`. Clicking the app name at the top opens the card view. `Alt+Q` closes the current app.
+- Click the bar at the bottom of the screen, or drag it up, to go back to the home screen (`Alt+H`). Apps keep running.
+- In an app, drag the bottom bar sideways to switch to the app that was started before or after it. A short drag springs back. The `<` and `>` at the top and `Alt+Left` / `Alt+Right` do the same.
+- On the home screen, click the bottom bar (or the status bar, or press `Alt+Up`) to see the running apps as cards. Drag the row sideways, click a card to open that app, drag a card up or click its `x` to close it. `Esc` goes back.
+- `Alt+Q` closes the current app and returns to the home screen; so does an app that finishes. `Alt+Tab` on the home screen opens the first running app.
 - Apps that ask for a small canvas are shown enlarged; `gfx.mode()` without a size gives an app the whole screen.
 
 **Windows**: overlapping windows with title bars.
@@ -258,7 +259,7 @@ python3 tools/claude_gateway.py
 3. `/info` shows the network device
 4. One chat round trip with the LLM works
 5. "Make me a ... app" produces an app, and `/run <name>` starts it
-6. In graphical mode: "make a breakout game" opens a playable game full screen; clicks work where you click; dragging the bottom bar switches between the game and the shell
+6. In graphical mode: "make a breakout game" opens a playable game full screen; clicks work where you click; clicking the bottom bar goes back to the prompt, and the card view brings the game back
 
 ## How it works
 

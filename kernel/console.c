@@ -29,12 +29,12 @@ static void serial_putc(char c) {
 
 /* -------------------------------------------------------------- terminal */
 static void term_touch(term *t) {
-    if (t->cy >= 0 && t->cy < 32) t->dirty |= 1u << t->cy;
+    if (t->cy >= 0 && t->cy < 64) t->dirty |= 1ULL << t->cy;
 }
 
 static void term_clear_range(term *t, int from, int to) {
     for (int i = from; i < to; i++) t->cells[i] = (u16)(t->attr << 8) | ' ';
-    t->dirty = ~0u;
+    t->dirty = ~0ULL;
 }
 
 static void term_newline(term *t) {
@@ -167,6 +167,24 @@ tty *tty_create(int cols, int rows) {
     term_clear_range(tm, 0, cols * rows);
     t->term = tm;
     return t;
+}
+
+void term_resize(term *t, int cols, int rows) {
+    if (t->hw || cols < 1 || rows < 1 || (cols == t->cols && rows == t->rows)) return;
+    u16 *cells = malloc((size_t)cols * (size_t)rows * sizeof *cells);
+    if (!cells) return;
+    for (int i = 0; i < cols * rows; i++) cells[i] = (u16)(0x07 << 8) | ' ';
+    /* keep the bottom part if the cursor would fall off */
+    int shift = t->cy + 1 > rows ? t->cy + 1 - rows : 0;
+    for (int r = 0; r < rows && r + shift < t->rows; r++)
+        for (int c = 0; c < cols && c < t->cols; c++) cells[r * cols + c] = t->cells[(r + shift) * t->cols + c];
+    free(t->cells);
+    t->cells = cells;
+    t->cols = cols;
+    t->rows = rows;
+    t->cy -= shift;
+    if (t->cx >= cols) t->cx = cols - 1;
+    t->dirty = ~0ULL;
 }
 
 void tty_destroy(tty *t) {
