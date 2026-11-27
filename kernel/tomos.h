@@ -158,7 +158,7 @@ int sound_busy(void *owner);
 u32 pci_read(u8 bus, u8 dev, u8 fn, u8 off); /* rust/src/pci.rs */
 void pci_write(u8 bus, u8 dev, u8 fn, u8 off, u32 v);
 
-/* ---- graphics (gui/gfx.c) ---- */
+/* ---- graphics (rust/src/gfx.rs) ---- */
 typedef struct surface {
     u32 *px; /* 0x00RRGGBB */
     int w, h;

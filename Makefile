@@ -48,8 +48,8 @@ SRCS := $(wildcard kernel/*.c lib/*.c lua/*.c gui/*.c)
 # static library.
 RUSTLIB := rust/target/x86_64-tomos/release/libtomos_rt.a
 RUST_SRCS := $(shell find rust/src third_party/remedy-lua/src -type f) rust/Cargo.toml \
-             rust/x86_64-tomos.json third_party/remedy-lua/Cargo.toml
-OBJS := $(BUILD)/arch/x86_64/boot.o $(BUILD)/gui/font_data.o \
+             rust/x86_64-tomos.json gui/font_ja.bin third_party/remedy-lua/Cargo.toml
+OBJS := $(BUILD)/arch/x86_64/boot.o \
         $(SRCS:%.c=$(BUILD)/%.o)
 
 KERNEL := $(BUILD)/tomos.elf
@@ -98,10 +98,6 @@ $(KERNEL): $(OBJS) $(RUSTLIB) linker.ld
 	@ls -l $@ | awk '{printf "built %s (%d KiB)\n", $$NF, $$5 / 1024}'
 
 $(BUILD)/arch/x86_64/boot.o: arch/x86_64/boot.asm
-	@mkdir -p $(dir $@)
-	$(AS) -f elf64 $< -o $@
-
-$(BUILD)/gui/font_data.o: gui/font_data.asm gui/font_ja.bin
 	@mkdir -p $(dir $@)
 	$(AS) -f elf64 $< -o $@
 

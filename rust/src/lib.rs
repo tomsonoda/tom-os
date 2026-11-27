@@ -10,6 +10,7 @@ mod sys;
 mod agent;
 mod apps;
 mod fs;
+mod gfx;
 mod http;
 mod json;
 mod lua;
