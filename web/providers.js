@@ -187,8 +187,11 @@ end
 
 const DEMOS = [
   { name: "paint", words: /paint|draw|sketch/i, code: PAINT, about: "a drawing pad" },
-  { name: "balls", words: /./, code: BALLS, about: "bouncing balls" },
+  { name: "balls", words: /ball|bounc/i, code: BALLS, about: "bouncing balls" },
 ];
+const DEMO_HELP = "This is the demo: no model is connected, so I cannot really answer or write apps. " +
+  "I can show two ready-made ones: type \"balls\" or \"paint\".\n" +
+  "To have a real model write any app you ask for, open the settings (the gear at the top right) and choose Claude or another server.";
 
 function demo(request) {
   const messages = request.messages;
@@ -197,18 +200,19 @@ function demo(request) {
   const asked = messages[lastUser].content || "";
   const steps = messages.slice(lastUser + 1).filter((m) => m.role === "tool").length;
   const pick = DEMOS.find((d) => d.words.test(asked));
+  // nothing starts unless it was asked for
+  if (!pick) return reply({ role: "assistant", content: DEMO_HELP });
   const call = (name, args, content) => reply({
     role: "assistant", content,
     tool_calls: [{ id: "demo_" + Date.now(), type: "function", function: { name, arguments: JSON.stringify(args) } }],
   });
   if (steps === 0) {
     return call("write_file", { path: `apps/${pick.name}.lua`, content: pick.code },
-      `This is the demo: no model is connected, so I can only make ${pick.about} (or a drawing pad if you ask to draw).`);
+      `Here is ${pick.about}, one of the demo's two ready-made apps.`);
   }
   if (steps === 1) return call("launch_app", { path: `apps/${pick.name}.lua` }, null);
   return reply({
     role: "assistant",
-    content: "It is running. Drag the bar at the bottom up to come back here.\n" +
-      "To have a real model write any app you ask for, open the settings (the gear at the top right) and choose Claude or another server.",
+    content: "It is running. Drag the bar at the bottom up to come back here.",
   });
 }

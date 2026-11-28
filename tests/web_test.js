@@ -73,7 +73,12 @@ async function open(browser, url, options) {
   const HOME = 0xF2F6F5, BALLS = 0x10202A, WHITE = 0xFFFFFF;
 
   const desk = await open(browser, url, { viewport: { width: 1024, height: 768 } });
-  await step("starts in the page and shows the home screen", async () => {
+  await step("the first visit shows only the choice of model; tom-os starts after it", async () => {
+    await desk.page.waitForSelector("dialog[open]");
+    await desk.page.waitForTimeout(500);
+    if (desk.log.includes("tom-os")) throw new Error("tom-os started before the choice was made");
+    if (await desk.page.isVisible("#gear")) throw new Error("the settings button is shown behind the dialog");
+    await desk.page.click("#save");
     await desk.expect("tom-os 0.1");
     await desk.expect("through the browser");
     await desk.until("the home screen", async () => (await desk.pixel(20, 300)) === HOME);
@@ -83,8 +88,16 @@ async function open(browser, url, options) {
     await desk.page.keyboard.press("Enter");
     await desk.expect("42\t6");
   });
-  await step("the agent builds an app and runs it on its own thread", async () => {
-    await desk.page.keyboard.type("make something fun", { delay: 10 });
+  await step("the demo starts nothing that was not asked for", async () => {
+    await desk.page.keyboard.type("hello", { delay: 10 });
+    await desk.page.keyboard.press("Enter");
+    await desk.expect("choose Claude or another server");
+    await desk.page.waitForTimeout(800);
+    if (desk.log.includes("launch_app")) throw new Error("an app was started");
+    if ((await desk.pixel(20, 300)) !== HOME) throw new Error("the home screen is not shown");
+  });
+  await step("asked for it, the agent builds an app and runs it on its own thread", async () => {
+    await desk.page.keyboard.type("balls", { delay: 10 });
     await desk.page.keyboard.press("Enter");
     await desk.expect("[write_file] apps/balls.lua");
     await desk.expect("[launch_app] apps/balls.lua");
@@ -104,13 +117,14 @@ async function open(browser, url, options) {
 
   const phone = await open(browser, url, devices["Pixel 7"]);
   await step("starts at phone size, drawn at the display's density", async () => {
+    await phone.page.click("#save");
     await phone.expect("tom-os 0.1");
     const size = await phone.page.evaluate(() => [document.getElementById("screen").width, window.innerWidth, window.devicePixelRatio]);
     if (size[0] !== size[1] * Math.round(size[2])) throw new Error("canvas is " + size[0] + " wide for " + size[1] + " x " + size[2]);
   });
   await step("text from an on-screen keyboard or input method is typed", async () => {
     await phone.page.locator("#typing").focus();
-    await phone.page.keyboard.insertText("make a drawing app");
+    await phone.page.keyboard.insertText("paint");
     await phone.page.keyboard.insertText("\n");
     await phone.expect("[launch_app] apps/paint.lua");
     await phone.until("the drawing pad", async () => (await phone.pixel(200, 400)) === WHITE);

@@ -81,9 +81,9 @@ make test-web   # drives it in headless Chromium (needs Node.js and Playwright)
 
 The files in `web/` are a static site. `.github/workflows/pages.yml` publishes them to GitHub Pages whenever `main` changes, once Pages is switched on for the repository (Settings -> Pages -> Source: "GitHub Actions").
 
-The gear button chooses which model writes the apps:
+On the first visit the page asks which model writes the apps, before anything else is shown; the gear button changes it later:
 
-- **Demo** (the default): no model, a few scripted answers that build a small app, so that the page shows what tom-os does.
+- **Demo** (the default): no model. It can show two ready-made apps (type `balls` or `paint`), so that the page shows what tom-os does; it starts nothing else.
 - **Claude**: your own Anthropic API key. The page calls the API directly from your browser through the official SDK (loaded from esm.sh); the key is stored only in the browser's local storage. Use a key you are willing to keep in that browser.
 - **Another server**: the URL of an OpenAI-compatible chat completions endpoint that allows requests from web pages (for example Ollama started with `OLLAMA_ORIGINS=*`).
 

@@ -271,11 +271,22 @@ for (const id of SAVED) {
 }
 field("provider").addEventListener("change", showFields);
 field("gear").addEventListener("click", () => { showFields(); dialog.showModal(); });
-field("save").addEventListener("click", () => {
+function saveSettings() {
   for (const id of SAVED) localStorage.setItem("tomos." + id, field(id).value);
-  dialog.close();
   typing.focus({ preventScroll: true });
-});
+}
+field("save").addEventListener("click", () => dialog.close());
+dialog.addEventListener("close", saveSettings); // also when closed with Esc
+
+// On the first visit the choice of model comes first, and nothing else is
+// shown until it has been made.
+if (localStorage.getItem("tomos.provider") === null) {
+  field("gear").style.display = "none";
+  showFields();
+  dialog.showModal();
+  await new Promise((resolve) => dialog.addEventListener("close", resolve, { once: true }));
+  field("gear").style.display = "";
+}
 
 // ---------------------------------------------------------------- start
 const { instance } = await WebAssembly.instantiateStreaming(fetch("tomos.wasm"), { env });
