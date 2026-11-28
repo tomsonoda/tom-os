@@ -87,7 +87,35 @@ On the first visit the page asks which model writes the apps, before anything el
 - **Claude**: your own Anthropic API key. The page calls the API directly from your browser through the official SDK (loaded from esm.sh); the key is stored only in the browser's local storage. Use a key you are willing to keep in that browser.
 - **Another server**: the URL of an OpenAI-compatible chat completions endpoint that allows requests from web pages (for example Ollama started with `OLLAMA_ORIGINS=*`).
 
+The page can be installed like an app: in the browser's menu choose "Add to Home screen" (Android) or "Install" (desktop Chrome and Edge). It then opens without the browser's bars and also starts without a connection (the demo works offline; a real model needs the network).
+
 How it works: WebAssembly has a single call stack and cannot block, while the kernel switches between threads and waits for input. The build is therefore passed through Binaryen's "asyncify", which lets a call out to the page unwind the stack into a buffer and rewind it later; the page (`web/tomos.js`) uses that to switch threads and to give the browser time to deliver events and repaint. The machine layer is `rust/src/arch/wasm32` (about 450 lines). The browser version has no sound yet, text is English, and Japanese is typed with the input method of the browser's own system.
+
+## On an Android phone
+
+Two ways, neither of which needs root:
+
+**In the browser** (any phone): open the published page, or install it as described under [In a browser](#in-a-browser). This is the WebAssembly version.
+
+**The ARM kernel in QEMU, inside Termux**: the real aarch64 kernel, emulated, so slow, but on the phone itself.
+
+1. Install [Termux](https://termux.dev) from F-Droid (the version on Google Play is restricted and may not work).
+2. In Termux:
+
+   ```sh
+   curl -fLO https://tomsonoda.github.io/tom-os/downloads/android-termux.sh
+   sh android-termux.sh          # text mode in the terminal
+   sh android-termux.sh gui      # graphical mode
+   ```
+
+   The script installs QEMU (`qemu-system-aarch64-headless`, about 100 MB with its dependencies) and Python, downloads the kernel image, and starts it.
+3. For graphical mode, install a VNC viewer app (for example AVNC, from F-Droid or Google Play) and connect it to `127.0.0.1:5900` while the script is running.
+
+Without further settings the script starts a small stand-in for the LLM on the phone, which needs no key: it echoes what you say and writes a little app when the request contains the word "app". For a real model, run a gateway on a computer in the same network (`python3 tools/claude_gateway.py --bind 0.0.0.0`) and start the script with `TOMOS_LLM=<that computer's IP>:8080`.
+
+The script has been tried on Linux with the same QEMU options, not on a phone: expect the Termux packages or the speed to need adjusting.
+
+Running the ARM kernel at full speed needs the Android Virtualization Framework, which only some devices offer for custom virtual machines; the kernel supports that kind of machine (`DEVICES=pci` above) but has not been tried there.
 
 ## Running
 

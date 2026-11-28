@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 rust/target/
 web/tomos.wasm
+web/downloads/

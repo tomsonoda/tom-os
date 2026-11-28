@@ -288,6 +288,10 @@ if (localStorage.getItem("tomos.provider") === null) {
   field("gear").style.display = "";
 }
 
+// Installable, and usable without a connection (see sw.js). Service
+// workers need https or localhost; elsewhere the page works without.
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+
 // ---------------------------------------------------------------- start
 const { instance } = await WebAssembly.instantiateStreaming(fetch("tomos.wasm"), { env });
 wasm = instance.exports;

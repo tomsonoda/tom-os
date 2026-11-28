@@ -1,4 +1,5 @@
-# Publishes the browser version (web/) to GitHub Pages when main changes.
+# Publishes the browser version (web/) to GitHub Pages when main changes,
+# together with the ARM image for tools/android-termux.sh.
 # Needs Pages switched on for the repository, once:
 # Settings -> Pages -> Build and deployment -> Source: "GitHub Actions".
 name: pages
@@ -31,6 +32,12 @@ jobs:
           sudo apt-get install -y binaryen
       - name: Build the browser version
         run: make web
+      - name: Add the ARM image and what tools/android-termux.sh downloads
+        run: |
+          make ARCH=aarch64
+          mkdir -p web/downloads
+          cp build/aarch64/Image web/downloads/tomos-aarch64-Image
+          cp tools/mock_llm.py tools/android-termux.sh web/downloads/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

@@ -10,7 +10,10 @@ const path = require("path");
 const { chromium, devices } = require("playwright");
 
 const ROOT = path.join(__dirname, "..", "web");
-const TYPES = { ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm" };
+const TYPES = {
+  ".html": "text/html", ".js": "text/javascript", ".wasm": "application/wasm", ".png": "image/png",
+  ".webmanifest": "application/manifest+json",
+};
 
 function serve() {
   const server = http.createServer((request, response) => {
@@ -113,6 +116,18 @@ async function open(browser, url, options) {
     await desk.page.waitForTimeout(200);
     await desk.page.keyboard.up("Escape");
     await desk.until("the home screen", async () => (await desk.pixel(20, 300)) === HOME);
+  });
+
+  await step("can be installed and starts without a connection", async () => {
+    const manifest = await desk.page.evaluate(async () => (await fetch(document.querySelector("link[rel=manifest]").href)).json());
+    if (manifest.display !== "standalone" || manifest.icons.length < 2) throw new Error("manifest: " + JSON.stringify(manifest));
+    await desk.page.evaluate(() => navigator.serviceWorker.ready);
+    await desk.page.reload(); // now everything has passed through the service worker
+    await desk.expect("tom-os 0.1");
+    await desk.page.context().setOffline(true);
+    await desk.page.reload();
+    await desk.expect("tom-os 0.1");
+    await desk.page.context().setOffline(false);
   });
 
   const phone = await open(browser, url, devices["Pixel 7"]);
