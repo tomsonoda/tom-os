@@ -6,9 +6,9 @@ use alloc::alloc::{Layout, alloc_zeroed, dealloc};
 use super::js;
 use crate::rt::KCell;
 
-/// What the home screen says. The browser version is in English, and
-/// Japanese is typed with the input method of the browser's own system.
-pub const GREETING: &str = "Hello";
+/// The hint in the home screen's input box. The browser version's is in
+/// English: Japanese is typed with the input method of the browser's own
+/// system.
 pub const INPUT_HINT: &str = "Ask tom-os anything...";
 
 /// The smallest screen the desktop is laid out for (phones are narrow).

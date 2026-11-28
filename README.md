@@ -109,7 +109,9 @@ Two ways, neither of which needs root:
    ```
 
    The script installs QEMU (`qemu-system-aarch64-headless`, about 100 MB with its dependencies) and Python, downloads the kernel image, and starts it.
-3. For graphical mode, install a VNC viewer app (for example AVNC, from F-Droid or Google Play) and connect it to `127.0.0.1:5900` while the script is running. The password is `tomos` (some viewers refuse servers without one; `TOMOS_VNC_PASSWORD` changes it).
+3. For graphical mode, install a VNC viewer app (for example AVNC, from F-Droid or Google Play) and connect it to `127.0.0.1:5900` while the script is running. The password is `tomos` (some viewers refuse servers without one; `TOMOS_VNC_PASSWORD` changes it). The screen is upright, like the phone (720x1600 drawn at twice the size); `TOMOS_RES=1024x768 TOMOS_SCALE=1` gives a landscape one.
+
+   Typing: a VNC viewer sends key presses, not text, so the phone keyboard's own input method (Japanese conversion, swiping) does not reach tom-os through it; tom-os's own romaji input method (`Alt+Space`) does. Text typed in the Termux window, where the script runs, goes to the tom-os prompt with the phone's own keyboard, Japanese included, because that window is tom-os's serial console. Android's split screen shows both side by side.
 
 Without further settings the script starts a small stand-in for the LLM on the phone, which needs no key: it echoes what you say and writes a little app when the request contains the word "app". For a real model, run a gateway on a computer in the same network (`python3 tools/claude_gateway.py --bind 0.0.0.0`) and start the script with `TOMOS_LLM=<that computer's IP>:8080`.
 

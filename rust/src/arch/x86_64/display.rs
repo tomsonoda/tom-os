@@ -4,8 +4,7 @@
 use super::pci::{self, inw, outb, outw};
 use crate::rt::KCell;
 
-/// What the home screen says.
-pub const GREETING: &str = "こんにちは";
+/// The hint in the home screen's input box.
 pub const INPUT_HINT: &str = "Ask tom-os anything...   (Option/Alt+Space: 日本語)";
 
 /// The smallest screen the desktop is laid out for.

@@ -4,7 +4,9 @@
 # emulates the machine, so this is slow, but it is the real ARM kernel.
 #
 #   sh android-termux.sh          text mode, in this terminal
-#   sh android-termux.sh gui      graphical mode: connect a VNC viewer app
+#   sh android-termux.sh gui      graphical mode, upright like the phone
+#                                 (TOMOS_RES=1024x768 TOMOS_SCALE=1 for a
+#                                 landscape screen): connect a VNC viewer app
 #                                 to 127.0.0.1:5900, password "tomos"
 #                                 (TOMOS_VNC_PASSWORD changes it; VNC uses
 #                                 at most 8 characters)
@@ -63,12 +65,13 @@ MACHINE="-M virt -cpu cortex-a72 -m $MEM -no-reboot -kernel Image
 if [ "$MODE" = gui ]; then
     PASSWORD=${TOMOS_VNC_PASSWORD:-tomos}
     echo "Graphical mode: connect a VNC viewer to 127.0.0.1:5900, password: $PASSWORD"
-    echo "This terminal is tom-os's serial console as well."
+    echo "This terminal is tom-os's serial console as well: what you type here,"
+    echo "with the phone's own keyboard (Japanese too), goes to the tom-os prompt."
     # shellcheck disable=SC2086
     qemu-system-aarch64 $MACHINE \
         -device ramfb -device virtio-keyboard-device -device virtio-tablet-device \
         -object "secret,id=vnc,data=$PASSWORD" -display none -vnc 127.0.0.1:0,password-secret=vnc -serial mon:stdio \
-        -append "llm=$LLM model=$MODEL ${TOMOS_RES:+res=$TOMOS_RES}"
+        -append "llm=$LLM model=$MODEL res=${TOMOS_RES:-720x1600} scale=${TOMOS_SCALE:-2}"
 else
     # shellcheck disable=SC2086
     qemu-system-aarch64 $MACHINE -nographic -append "gui=0 llm=$LLM model=$MODEL"

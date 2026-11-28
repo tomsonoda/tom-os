@@ -266,7 +266,7 @@ def main():
             scr.wait_pixel(1000, 40, TITLE_ON, "shell title bar drawn twice as big")
             assert (scr.w, scr.h) == (2048, 1536), (scr.w, scr.h)
             scr.wait_pixel(1001, 41, TITLE_ON, "2x2 block")
-            vm.command("/display 1000x500", "[error]", "at least 800x600", PROMPT)
+            vm.command("/display 1000x300", "[error]", "at least", PROMPT)  # too low on every machine
             vm.command("/display 8000x8000", "[error]", "video memory", PROMPT)
             scr.grab()
             assert (scr.w, scr.h) == (2048, 1536), "a failed change must keep the old mode"

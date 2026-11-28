@@ -13,7 +13,8 @@ fn start_graphics() {
     let scale = mem::arg("scale").map_or(0, |s| number(&s));
     let mut gui = wm::init(w, h, scale);
     if !gui && (w, h, scale) != (1024, 768, 0) {
-        kprint!("[display] {w}x{h} is not possible (at least 800x600 per scale step), using 1024x768\n");
+        let (min_w, min_h) = crate::arch::display::MIN_SIZE;
+        kprint!("[display] {w}x{h} is not possible (at least {min_w}x{min_h} per scale step), using 1024x768\n");
         gui = wm::init(1024, 768, 1);
     }
     if !gui {

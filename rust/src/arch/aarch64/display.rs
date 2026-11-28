@@ -12,12 +12,11 @@ use crate::mem;
 use crate::rt::KCell;
 use crate::virtio::{self, Kind, Queue, Transport};
 
-/// What the home screen says.
-pub const GREETING: &str = "こんにちは";
+/// The hint in the home screen's input box.
 pub const INPUT_HINT: &str = "Ask tom-os anything...   (Option/Alt+Space: 日本語)";
 
 /// The smallest screen the desktop is laid out for.
-pub const MIN_SIZE: (i32, i32) = (800, 600);
+pub const MIN_SIZE: (i32, i32) = (360, 360); // phones are narrow
 
 pub const TEXT_SCREEN: Option<(i32, i32)> = None;
 

@@ -159,12 +159,27 @@ fn draw_lines(s: &mut Surface, t: &[u8], x: i32, mut y: i32, maxw: i32, color: u
 
 /// The tom-os mark: a teal rounded square with a "t" and a yellow dot.
 fn draw_logo(s: &mut Surface, x: i32, y: i32, size: i32) {
-    let big = size >= 32;
     s.round(x, y, size, size, size * 5 / 16, C_ACCENT);
-    let (gx, gy) = if big { (9, 17) } else { (5, 9) };
-    s.glyph(x + size / 2 - gx, y + size / 2 - gy, b't', WHITE, None, if big { 2 } else { 1 });
-    let (r, pad) = if big { (5, 5) } else { (3, 2) };
-    s.circle(x + size - r - pad, y + r + pad, r, C_SPARK, true);
+    if size < 32 {
+        // small: the letter from the font is clearer
+        s.glyph(x + size / 2 - 5, y + size / 2 - 9, b't', WHITE, None, 1);
+        s.circle(x + size - 5, y + 5, 3, C_SPARK, true);
+        return;
+    }
+    // large: the same shapes as the app icon (web/icon-*.png), on a grid of
+    // 16 units over the middle two thirds
+    let u = size as f64 * 2.0 / 3.0 / 16.0;
+    let (ox, oy) = (x as f64 + size as f64 / 2.0 - 8.0 * u, y as f64 + size as f64 / 2.0 - 8.0 * u);
+    let mut bar = |x0: f64, y0: f64, x1: f64, y1: f64| {
+        let (px, py) = (libm::round(ox + x0 * u) as i32, libm::round(oy + y0 * u) as i32);
+        let (w, h) = (libm::round((x1 - x0) * u) as i32, libm::round((y1 - y0) * u) as i32);
+        s.round(px, py, w, h, (u * 0.9) as i32, WHITE);
+    };
+    bar(6.0, 2.5, 8.2, 13.0); // stem
+    bar(3.5, 5.0, 11.0, 7.0); // cross bar
+    bar(6.0, 11.0, 11.0, 13.0); // foot
+    let r = libm::round(1.7 * u) as i32;
+    s.circle((ox + 12.6 * u) as i32, (oy + 3.4 * u) as i32, r, C_SPARK, true);
 }
 
 /// The height of one entry; draws it when given a surface.
@@ -353,12 +368,15 @@ impl HomeView {
     }
 
     fn draw_welcome(&mut self, s: &mut Surface, bottom: i32) {
-        let hello = display::GREETING.as_bytes();
+        // No words of greeting: tom-os does not know the user's language.
+        // The mark, and a line in English only where it fits.
+        let size = 80;
+        let y = (bottom / 2 - size).max(20);
+        draw_logo(s, (s.w - size) / 2, y, size);
         let sub = b"What would you like to make? Ask in any language.";
-        let y = (bottom / 2 - 70).max(20);
-        draw_logo(s, s.w / 2 - 20, y - 52, 40);
-        s.text((s.w - text_w(hello) * 2) / 2, y, hello, C_TEXT, None, 2);
-        s.text((s.w - text_w(sub)) / 2, y + 44, sub, C_MUTED, None, 1);
+        if text_w(sub) <= s.w - 32 {
+            s.text((s.w - text_w(sub)) / 2, y + size + 24, sub, C_MUTED, None, 1);
+        }
     }
 
     fn draw_input(&mut self, s: &mut Surface, col_x: i32, col_w: i32, box_y: i32, box_h: i32, inner_w: i32) {
@@ -366,7 +384,10 @@ impl HomeView {
         s.round(col_x + 1, box_y + 1, col_w - 2, box_h - 2, 15, C_BOX);
         let (tx, ty) = (col_x + 18, box_y + 12);
         if self.input.is_empty() && self.comp.is_empty() {
-            let placeholder = display::INPUT_HINT;
+            // on a narrow screen only the first part of the hint fits
+            let full = display::INPUT_HINT;
+            let short = full.split("   ").next().unwrap_or(full);
+            let placeholder = if text_w(full.as_bytes()) <= inner_w { full } else { short };
             s.text(tx, ty + 2, placeholder.as_bytes(), C_MUTED, None, 1);
             s.fill(tx, ty, 2, 18, C_ACCENT);
         } else {
