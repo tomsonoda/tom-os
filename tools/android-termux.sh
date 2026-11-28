@@ -5,7 +5,9 @@
 #
 #   sh android-termux.sh          text mode, in this terminal
 #   sh android-termux.sh gui      graphical mode: connect a VNC viewer app
-#                                 (for example AVNC) to 127.0.0.1:5900
+#                                 to 127.0.0.1:5900, password "tomos"
+#                                 (TOMOS_VNC_PASSWORD changes it; VNC uses
+#                                 at most 8 characters)
 #
 # The LLM: by default a small stand-in that needs no key is started on the
 # phone (it echoes what you say, and writes a little app when the request
@@ -59,12 +61,13 @@ MACHINE="-M virt -cpu cortex-a72 -m $MEM -no-reboot -kernel Image
   -netdev user,id=n0 -device virtio-net-device,netdev=n0"
 
 if [ "$MODE" = gui ]; then
-    echo "Graphical mode: connect a VNC viewer to 127.0.0.1:5900 (no password)."
+    PASSWORD=${TOMOS_VNC_PASSWORD:-tomos}
+    echo "Graphical mode: connect a VNC viewer to 127.0.0.1:5900, password: $PASSWORD"
     echo "This terminal is tom-os's serial console as well."
     # shellcheck disable=SC2086
     qemu-system-aarch64 $MACHINE \
         -device ramfb -device virtio-keyboard-device -device virtio-tablet-device \
-        -display none -vnc 127.0.0.1:0 -serial mon:stdio \
+        -object "secret,id=vnc,data=$PASSWORD" -display none -vnc 127.0.0.1:0,password-secret=vnc -serial mon:stdio \
         -append "llm=$LLM model=$MODEL ${TOMOS_RES:+res=$TOMOS_RES}"
 else
     # shellcheck disable=SC2086
